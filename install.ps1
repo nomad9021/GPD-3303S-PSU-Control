@@ -90,15 +90,23 @@ Write-Host ''
 
 if (Test-Command 'uv') {
     Write-Info 'Installing with uv'
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+    # uv puts tool launchers in its own bin directory. Point that at the
+    # location this script promises, so $BinDir is authoritative either way.
+    $env:UV_TOOL_BIN_DIR = $BinDir
     uv tool install --force $spec
     if ($LASTEXITCODE -ne 0) { throw 'uv tool install failed.' }
     Set-InstallMethod 'uv-tool'
+    Add-ToUserPath $BinDir
 }
 elseif (Test-Command 'pipx') {
     Write-Info 'Installing with pipx'
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+    $env:PIPX_BIN_DIR = $BinDir
     pipx install --force $spec
     if ($LASTEXITCODE -ne 0) { throw 'pipx install failed.' }
     Set-InstallMethod 'pipx'
+    Add-ToUserPath $BinDir
 }
 else {
     Write-Info 'Installing into a private virtual environment'
@@ -125,6 +133,13 @@ else {
 "$(Join-Path $VenvDir 'Scripts\gpd3303s.exe')" %*
 "@
     Add-ToUserPath $BinDir
+}
+
+# Every path above must leave a working launcher at the advertised location;
+# catching that here turns a silent mis-install into a clear failure.
+$launcher = Get-ChildItem -Path $BinDir -Filter 'gpd3303s.*' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $launcher) {
+    throw "Installed, but no launcher was created in $BinDir."
 }
 
 Write-Host ''

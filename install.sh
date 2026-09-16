@@ -100,19 +100,16 @@ printf '\n%sGPD-3303S Control%s — installing %s\n\n' "$BOLD" "$RESET" "$REF"
 # ---------------------------------------------------------------------------
 if have uv; then
   info "Installing with uv"
-  uv tool install --force "$SPEC"
+  mkdir -p "$BIN_DIR"
+  # uv puts tool launchers in its own bin directory. Point that at the location
+  # this script promises, so BIN_DIR is authoritative however we install.
+  UV_TOOL_BIN_DIR="$BIN_DIR" uv tool install --force "$SPEC"
   record_method "uv-tool"
-  # uv puts tool shims in its own bin dir; find the one it just made.
-  UV_BIN="$(uv tool dir 2>/dev/null)/../bin" || UV_BIN=""
-  if [ -x "$HOME/.local/bin/gpd3303s" ]; then
-    :  # uv already installed into ~/.local/bin
-  elif [ -n "$UV_BIN" ] && [ -x "$UV_BIN/gpd3303s" ]; then
-    link_launcher "$(cd "$UV_BIN" && pwd)/gpd3303s"
-  fi
 
 elif have pipx; then
   info "Installing with pipx"
-  pipx install --force "$SPEC"
+  mkdir -p "$BIN_DIR"
+  PIPX_BIN_DIR="$BIN_DIR" pipx install --force "$SPEC"
   record_method "pipx"
 
 else
@@ -135,6 +132,11 @@ else
   record_method "venv"
   link_launcher "$VENV_DIR/bin/gpd3303s"
 fi
+
+# Every path above must leave a working launcher at the advertised location;
+# catching that here turns a silent mis-install into a clear failure.
+LAUNCHER="$BIN_DIR/gpd3303s"
+[ -x "$LAUNCHER" ] || die "installed, but no launcher was created at $LAUNCHER"
 
 # ---------------------------------------------------------------------------
 # Serial port access on Linux needs group membership, which trips up most users.

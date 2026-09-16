@@ -98,6 +98,11 @@ jobs:
 
       - name: Launcher works
         run: |
+          # Which branch of the installer ran (uv, pipx or venv) decides where
+          # the launcher lands, so record it alongside the result.
+          echo "install method: $(cat "${HOME}/.local/share/gpd3303s-control/install-method" 2>/dev/null \
+            || cat "${HOME}/Library/Application Support/gpd3303s-control/install-method" 2>/dev/null \
+            || echo unknown)"
           "${{ runner.temp }}/bin/gpd3303s" --version
           "${{ runner.temp }}/bin/gpd3303s" --list-ports
 
