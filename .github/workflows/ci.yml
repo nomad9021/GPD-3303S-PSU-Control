@@ -34,6 +34,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Desktop backend probe works without a renderer installed
+        run: |
+          # Headless runners have no webview, so this must report "none"
+          # and exit 1 rather than raising.
+          set +e
+          backend=$(python -m gpd3303s --gui-backend)
+          code=$?
+          set -e
+          echo "backend=$backend exit=$code"
+          test "$backend" = "none" && test "$code" -eq 1
+        shell: bash
+
       - name: Run tests
         run: python -m pytest -q
 
@@ -101,6 +113,7 @@ jobs:
 
       - name: Launcher works
         run: |
+          "${{ runner.temp }}/bin/gpd3303s" --detect || true
           # Which branch of the installer ran (uv, pipx or venv) decides where
           # the launcher lands, so record it alongside the result.
           echo "install method: $(cat "${HOME}/.local/share/gpd3303s-control/install-method" 2>/dev/null \

@@ -58,13 +58,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"gpd3303s-control {__version__}")
     parser.add_argument("--host", default=DEFAULT_HOST, help="interface to bind (default: %(default)s)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="TCP port (default: %(default)s)")
-    parser.add_argument("--no-browser", action="store_true", help="do not open a browser window")
+    parser.add_argument("--web", action="store_true",
+                        help="serve the UI in your browser instead of a desktop window")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="with --web, do not open a browser automatically")
     parser.add_argument("--simulate", action="store_true", help="auto-connect to the built-in simulator")
     parser.add_argument("--connect", metavar="PORT", help="auto-connect to this serial port at startup")
+    parser.add_argument("--no-autoconnect", action="store_true",
+                        help="do not search for an instrument at startup")
     parser.add_argument("--list-ports", action="store_true", help="print detected serial ports and exit")
+    parser.add_argument("--detect", action="store_true",
+                        help="search the serial ports for a GPD supply and exit")
     parser.add_argument("--check-update", action="store_true", help="check for a newer release and exit")
     parser.add_argument("--update", action="store_true", help="upgrade to the latest release and exit")
     parser.add_argument("--where", action="store_true", help="print config and log locations and exit")
+    parser.add_argument("--gui-backend", action="store_true",
+                        help="print the detected desktop window backend and exit")
+    parser.add_argument("--icon-path", action="store_true",
+                        help="print the path to the application icon and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     return parser
 
@@ -81,6 +92,35 @@ def main(argv=None) -> int:
         for port in available_ports():
             print(f"{port['device']:<24} {port['description']}")
         return 0
+
+    if args.detect:
+        from .device import discover
+
+        found = discover()
+        if found:
+            print(f"Found {found['identity']}")
+            print(f"  port: {found['port']}")
+            print(f"  baud: {found['baud_rate']}")
+            return 0
+        print("No GPD supply found on any serial port.")
+        print("Check the USB cable, and on Linux that you are in the 'dialout' group.")
+        return 1
+
+    if args.icon_path:
+        from pathlib import Path
+
+        icon = Path(__file__).parent / "web" / "icon.svg"
+        if not icon.exists():
+            return 1
+        print(icon)
+        return 0
+
+    if args.gui_backend:
+        from . import desktop
+
+        backend = desktop.gui_available()
+        print(backend or "none")
+        return 0 if backend else 1
 
     if args.where:
         print(f"config: {config_dir() / 'settings.json'}")
@@ -112,14 +152,28 @@ def main(argv=None) -> int:
 
     settings = Settings()
     auto_port = SIMULATOR_PORT if args.simulate else args.connect
-    app = create_app(settings, auto_connect=auto_port)
+    # With no port named, look for a real instrument so the app is usable
+    # without anyone choosing a port or guessing a baud rate.
+    autodetect = not (auto_port or args.no_autoconnect)
+    app = create_app(settings, auto_connect=auto_port, autodetect=autodetect)
+
+    # Default to a real application window; --web keeps the browser behaviour.
+    if not args.web:
+        from . import desktop
+
+        try:
+            print(f"\n  GPD Control {__version__}\n")
+            return desktop.run(app, host=args.host, debug=args.verbose)
+        except desktop.DesktopUnavailable as exc:
+            log.warning("%s", exc)
+            log.warning("falling back to the browser interface")
 
     bind_port = _free_port(args.host, args.port)
     if bind_port != args.port:
         log.info("port %s is busy; using %s instead", args.port, bind_port)
     url = f"http://{args.host}:{bind_port}/"
 
-    print(f"\n  GPD-3303S Control {__version__}")
+    print(f"\n  GPD Control {__version__}")
     print(f"  {url}\n")
 
     if not args.no_browser:

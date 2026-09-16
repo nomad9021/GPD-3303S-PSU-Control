@@ -137,6 +137,66 @@ def available_ports() -> List[dict]:
     return ports
 
 
+#: Only ports that look like a USB/serial adapter are probed. Blindly writing to
+#: every ``/dev/tty*`` would poke at modems, consoles and unrelated instruments.
+_PROBE_HINTS = ("ttyusb", "ttyacm", "usbserial", "usbmodem", "com", "cu.", "ttys")
+
+
+def _looks_like_an_adapter(device: str) -> bool:
+    name = device.lower().rsplit("/", 1)[-1]
+    return any(hint in name for hint in _PROBE_HINTS)
+
+
+def discover(
+    ports: Optional[List[str]] = None,
+    baud_rates: Optional[List[int]] = None,
+    timeout: float = 0.6,
+) -> Optional[dict]:
+    """Find an attached GPD supply.
+
+    Probes each candidate port at each baud rate with ``*IDN?`` — a read-only
+    command — and returns the first response that identifies as a GW Instek
+    GPD. Returns ``None`` when nothing answers.
+
+    The baud rate matters: the instrument ships at 9600 and silently returns
+    nothing at the wrong speed, which is the single most common reason a
+    connection "succeeds" but shows no readings.
+    """
+    if ports is None:
+        ports = [
+            p["device"] for p in available_ports()
+            if p["device"] != SIMULATOR_PORT and _looks_like_an_adapter(p["device"])
+        ]
+    baud_rates = baud_rates or protocol.BAUD_PROBE_ORDER
+
+    for port in ports:
+        for baud in baud_rates:
+            handle = None
+            try:
+                handle = serial.Serial(
+                    port=port, baudrate=baud, timeout=timeout, write_timeout=timeout
+                )
+                time.sleep(0.12)
+                handle.reset_input_buffer()
+                handle.write((protocol.cmd_identify() + protocol.TERMINATOR).encode("ascii"))
+                reply = handle.readline().decode("ascii", errors="ignore").strip()
+            except (serial.SerialException, OSError) as exc:
+                log.debug("probe %s @ %s failed: %s", port, baud, exc)
+                continue
+            finally:
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+
+            if reply and "GPD" in reply.upper():
+                log.info("found %s on %s at %s baud", reply, port, baud)
+                return {"port": port, "baud_rate": baud, "identity": reply}
+
+    return None
+
+
 class PowerSupply:
     """Owns the serial link and the background polling loop.
 
@@ -144,14 +204,21 @@ class PowerSupply:
     single lock, so UI commands and the poller can never interleave mid-command.
     """
 
-    def __init__(self, poll_interval: float = 0.4, command_delay: float = 0.02):
+    def __init__(self, poll_interval: float = 0.4, command_delay: Optional[float] = None):
         self._serial = None
         self._lock = threading.RLock()
         self._poll_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
         self.poll_interval = poll_interval
-        self.command_delay = command_delay
+        # None means "derive from the link speed" (the manual's response times
+        # get longer as baud drops); an explicit value overrides that.
+        self._fixed_command_delay = command_delay
+        self.command_delay = (
+            command_delay if command_delay is not None
+            else protocol.command_delay_for(protocol.DEFAULT_BAUD_RATE)
+        )
+        self.baud_rate: Optional[int] = None
 
         self.spec: ModelSpec = protocol.MODELS[protocol.DEFAULT_MODEL]
         self.identity = ""
@@ -206,6 +273,22 @@ class PowerSupply:
                 raise DeviceError(f"Could not open {port}: {exc}") from exc
 
             self.port = port
+            self.baud_rate = baudrate
+            if self._fixed_command_delay is None:
+                # The simulator is in-process, so the manual's serial response
+                # times do not apply to it.
+                self.command_delay = (
+                    0.0 if port == SIMULATOR_PORT else protocol.command_delay_for(baudrate)
+                )
+
+            # Take the instrument out of local mode; without this some units
+            # ignore setpoint commands entered while the panel has control.
+            try:
+                self._write(protocol.cmd_remote())
+            except DeviceError:
+                # Older firmware may not implement REMOTE. Not fatal.
+                log.debug("REMOTE not accepted by %s", port)
+
             self.identity = self._query(protocol.cmd_identify()) or ""
             if not self.identity:
                 # Not fatal: a few units need a second attempt after power-up.
@@ -229,6 +312,20 @@ class PowerSupply:
         self._start_polling()
         return self.snapshot()
 
+    def autoconnect(self, fallback_to_simulator: bool = False) -> Optional[Telemetry]:
+        """Find and open a supply without the user picking a port.
+
+        Returns the telemetry snapshot on success, or ``None`` when nothing was
+        found and no simulator fallback was asked for.
+        """
+        found = discover()
+        if found:
+            return self.connect(found["port"], found["baud_rate"])
+        if fallback_to_simulator:
+            log.info("no instrument found; using the simulator")
+            return self.connect(SIMULATOR_PORT)
+        return None
+
     def disconnect(self) -> None:
         self._stop.set()
         thread = self._poll_thread
@@ -237,6 +334,12 @@ class PowerSupply:
         self._poll_thread = None
         with self._lock:
             if self._serial is not None:
+                # Give the front panel back, or the unit stays locked in remote
+                # mode until it is power-cycled.
+                try:
+                    self._write(protocol.cmd_local())
+                except Exception:  # pragma: no cover - best effort
+                    pass
                 try:
                     self._serial.close()
                 except Exception:  # pragma: no cover - best effort
@@ -244,6 +347,7 @@ class PowerSupply:
                 self._serial = None
             self.port = None
             self.identity = ""
+            self.baud_rate = None
         self._broadcast()
 
     # -- low-level I/O ------------------------------------------------------ #

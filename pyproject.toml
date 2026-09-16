@@ -28,6 +28,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The native window. pywebview renders through the OS webview: WebKitGTK on
+# Linux, WebView2 on Windows, WKWebView on macOS.
+desktop = [
+  "pywebview>=5.0",
+  "pyobjc-core>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
+]
+# Fallback renderer for Linux boxes without the GTK/WebKit2 system packages.
+# Self-contained but large, so it is kept out of the default desktop extra.
+desktop-qt = [
+  "pywebview>=5.0",
+  "qtpy>=2.4",
+  "PySide6-Essentials>=6.5",
+  "PySide6-Addons>=6.5",
+]
 dev = ["pytest>=7.0", "httpx>=0.27"]
 
 [project.scripts]

@@ -17,7 +17,7 @@ APP_NAME = "gpd3303s-control"
 DEFAULTS: Dict[str, Any] = {
     "theme": "system",             # system | light | dark
     "last_port": "",
-    "baud_rate": 115200,
+    "baud_rate": 9600,        # the instrument's factory default
     "poll_interval": 0.4,
     "auto_connect": False,
     "chart_window_s": 120,
