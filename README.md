@@ -49,6 +49,13 @@ browser, no address bar, no tabs. The interface is drawn with HTML inside the
 system's webview (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS),
 the same approach VS Code and Slack use.
 
+It is laid out like an application rather than a document: a fixed toolbar, a
+sidebar for the sections, an instrument panel that stays put while you work, and
+a status bar along the bottom showing the link, the output state, the CV/CC mode
+of each channel and total power. The window never scrolls as a whole — only the
+selected view does. On a small or short window the panel unpins and the whole
+column scrolls instead.
+
 Internally it talks to a small local server, which binds to `127.0.0.1` on a
 random port and is never exposed to the network.
 

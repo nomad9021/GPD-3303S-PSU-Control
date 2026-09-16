@@ -119,7 +119,7 @@ def available_ports() -> List[dict]:
     ports = [
         {
             "device": SIMULATOR_PORT,
-            "description": "Built-in simulator (no hardware required)",
+            "description": "Built-in simulator",
             "hwid": "virtual",
         }
     ]

@@ -57,7 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"gpd3303s-control {__version__}")
     parser.add_argument("--host", default=DEFAULT_HOST, help="interface to bind (default: %(default)s)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="TCP port (default: %(default)s)")
+    # None means "pick one": the desktop window takes any free port, and the
+    # browser mode falls back to DEFAULT_PORT.
+    parser.add_argument("--port", type=int, default=None,
+                        help=f"TCP port (browser mode default: {DEFAULT_PORT})")
     parser.add_argument("--web", action="store_true",
                         help="serve the UI in your browser instead of a desktop window")
     parser.add_argument("--no-browser", action="store_true",
@@ -163,14 +166,15 @@ def main(argv=None) -> int:
 
         try:
             print(f"\n  GPD Control {__version__}\n")
-            return desktop.run(app, host=args.host, debug=args.verbose)
+            return desktop.run(app, host=args.host, port=args.port, debug=args.verbose)
         except desktop.DesktopUnavailable as exc:
             log.warning("%s", exc)
             log.warning("falling back to the browser interface")
 
-    bind_port = _free_port(args.host, args.port)
-    if bind_port != args.port:
-        log.info("port %s is busy; using %s instead", args.port, bind_port)
+    requested = args.port or DEFAULT_PORT
+    bind_port = _free_port(args.host, requested)
+    if bind_port != requested:
+        log.info("port %s is busy; using %s instead", requested, bind_port)
     url = f"http://{args.host}:{bind_port}/"
 
     print(f"\n  GPD Control {__version__}")

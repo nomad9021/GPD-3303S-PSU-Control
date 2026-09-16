@@ -358,8 +358,16 @@ async function refreshPorts(preferred) {
   const { ports } = await api("/api/ports");
   const select = $("#port-select");
   const previous = preferred || select.value || state.settings.last_port;
+  // A <select> is as wide as its longest option, and some USB adapters report
+  // very long descriptions; trim them so the control stays a sensible size.
+  const trim = (text) => (text.length > 38 ? `${text.slice(0, 37)}…` : text);
   select.innerHTML = ports
-    .map((p) => `<option value="${p.device}">${p.device} — ${p.description}</option>`)
+    .map((p) => {
+      const label = p.description && p.description !== p.device
+        ? `${p.device} — ${p.description}`
+        : p.device;
+      return `<option value="${p.device}" title="${p.description || p.device}">${trim(label)}</option>`;
+    })
     .join("");
   if (previous && ports.some((p) => p.device === previous)) select.value = previous;
 }
@@ -398,6 +406,12 @@ function setConnected(connected, telemetry) {
     ? telemetry.identity || telemetry.port
     : telemetry?.error || "Not connected";
 
+  const dot2 = $("#status-dot-2");
+  if (dot2) dot2.dataset.state = connected ? "on" : telemetry?.error ? "error" : "off";
+  $("#status-connection").textContent = connected
+    ? `Connected · ${telemetry.port}${state.settings.baud_rate ? ` · ${state.settings.baud_rate} baud` : ""}`
+    : telemetry?.error || "Disconnected";
+
   $$("input[type=range], .setpoint__input, #output-toggle, #beep-toggle, #record-btn, #console-input, #console-send, #seq-run")
     .forEach((node) => { node.disabled = !connected; });
   $$("#tracking-group button, #memory-slots button").forEach((node) => { node.disabled = !connected; });
@@ -431,6 +445,18 @@ function applyTelemetry(telemetry) {
 
   const total = telemetry.channels.reduce((sum, c) => sum + (c.power || 0), 0);
   $("#total-power").textContent = total.toFixed(2);
+  $("#status-power").textContent = total.toFixed(2);
+
+  const output = $("#status-output");
+  output.textContent = telemetry.output ? "Output on" : "Output off";
+  output.dataset.on = String(telemetry.output);
+
+  // CV/CC only means something while the output is live.
+  $("#status-modes").innerHTML = telemetry.connected && telemetry.output
+    ? telemetry.channels
+        .map((c) => `<span data-mode="${c.mode}">CH${c.channel} ${c.mode.toUpperCase()}</span>`)
+        .join("")
+    : "";
 
   if (telemetry.trip) {
     $("#trip-detail").textContent = telemetry.trip;
@@ -804,13 +830,17 @@ function wireGlobalControls() {
 
   $("#trip-dismiss").addEventListener("click", () => { $("#trip-banner").hidden = true; });
 
-  // --- tabs ---
-  $$(".tabs button").forEach((button) => {
+  // --- sidebar navigation ---
+  $$(".sidebar button[data-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      $$(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b === button)));
+      $$(".sidebar button[data-tab]").forEach((b) =>
+        b.setAttribute("aria-selected", String(b === button)),
+      );
       $$(".panel").forEach((panel) => {
         panel.hidden = panel.id !== `panel-${button.dataset.tab}`;
       });
+      // The view was display:none, so the canvases had no size to lay out to.
+      $(".views").scrollTop = 0;
       if (button.dataset.tab === "monitor") {
         requestAnimationFrame(() => Object.values(state.charts).forEach((c) => c.resize()));
       }
@@ -1018,6 +1048,8 @@ function renderRecorder() {
       ? `Saved ${state.recorder.rows} rows`
       : "Not recording";
   $("#record-download").hidden = !state.recorder.path || active;
+  $("#status-recording").hidden = !active;
+  $("#status-recording-sep").hidden = !active;
 }
 
 // --------------------------------------------------------------------------- //
@@ -1034,7 +1066,8 @@ async function boot() {
   state.device = info.device;
   state.recorder = info.recorder;
 
-  $("#footer-version").textContent = `GPD Control ${info.version} · logs in ${info.data_dir}`;
+  $("#footer-version").textContent = `v${info.version}`;
+  $("#footer-version").title = `GPD Control ${info.version} · logs in ${info.data_dir}`;
 
   $("#baud-select").innerHTML = info.baud_rates
     .map((rate) => `<option value="${rate}">${rate} baud</option>`)
