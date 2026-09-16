@@ -97,9 +97,13 @@ def upgrade_spec(tag: Optional[str] = None) -> str:
     The project is distributed through GitHub releases rather than PyPI, so an
     upgrade points at a git ref: the requested release tag when one is known,
     otherwise the repository's default branch.
+
+    When no tag is known the ref is omitted entirely rather than defaulted to
+    ``HEAD``. pip turns ``@HEAD`` into ``git checkout -b HEAD``, and git refuses
+    to create a branch by that name, so the install fails outright.
     """
-    ref = tag or os.environ.get("GPD3303S_UPDATE_REF", "HEAD")
-    return f"git+{GIT_URL}@{ref}"
+    ref = tag or os.environ.get("GPD3303S_UPDATE_REF", "")
+    return f"git+{GIT_URL}@{ref}" if ref else f"git+{GIT_URL}"
 
 
 def _upgrade_command(method: str, spec: Optional[str] = None) -> Optional[list]:

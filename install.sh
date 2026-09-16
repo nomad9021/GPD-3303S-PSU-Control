@@ -35,13 +35,13 @@ have()  { command -v "$1" >/dev/null 2>&1; }
 # ---------------------------------------------------------------------------
 # Work out which release to install.
 # ---------------------------------------------------------------------------
+# Prints the release tag to install, or nothing when the repository has no
+# releases yet (in which case the caller installs the default branch).
 resolve_ref() {
   if [ -n "$REF" ]; then
     printf '%s' "$REF"
     return
   fi
-  # Prefer the newest published release; fall back to the default branch when
-  # the repository has no releases yet.
   tag=''
   if have curl; then
     tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
@@ -50,7 +50,7 @@ resolve_ref() {
     tag=$(wget -qO- "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) || tag=''
   fi
-  if [ -n "$tag" ]; then printf '%s' "$tag"; else printf 'HEAD'; fi
+  printf '%s' "$tag"
 }
 
 record_method() {
@@ -90,7 +90,15 @@ if [ -n "${GPD3303S_SPEC:-}" ]; then
   REF="$SPEC"
 else
   REF=$(resolve_ref)
-  SPEC="git+https://github.com/$REPO@$REF"
+  if [ -n "$REF" ]; then
+    SPEC="git+https://github.com/$REPO@$REF"
+  else
+    # No releases yet, so install the default branch. The ref has to be left
+    # off entirely rather than defaulted to "HEAD": pip turns "@HEAD" into
+    # `git checkout -b HEAD`, and git refuses to create a branch by that name.
+    SPEC="git+https://github.com/$REPO"
+    REF="default branch"
+  fi
 fi
 
 printf '\n%sGPD-3303S Control%s — installing %s\n\n' "$BOLD" "$RESET" "$REF"

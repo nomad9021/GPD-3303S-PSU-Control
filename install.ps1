@@ -26,9 +26,10 @@ function Write-Info { param($m) Write-Host "==> $m" -ForegroundColor Green }
 function Write-Warn { param($m) Write-Host "warn $m" -ForegroundColor Yellow }
 function Test-Command { param($n) [bool](Get-Command $n -ErrorAction SilentlyContinue) }
 
+# Returns the release tag to install, or an empty string when the repository
+# has no releases yet (in which case the caller installs the default branch).
 function Resolve-Ref {
     if ($Ref) { return $Ref }
-    # Prefer the newest release; fall back to the default branch if there is none.
     try {
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
                                      -Headers @{ 'User-Agent' = 'gpd3303s-installer' } -TimeoutSec 15
@@ -36,7 +37,7 @@ function Resolve-Ref {
     } catch {
         Write-Warn "Could not read the latest release; installing from the default branch."
     }
-    return 'HEAD'
+    return ''
 }
 
 function Set-InstallMethod {
@@ -81,7 +82,15 @@ if (-not (Test-Command 'git')) {
 }
 
 $resolved = Resolve-Ref
-$spec = "git+https://github.com/$Repo@$resolved"
+if ($resolved) {
+    $spec = "git+https://github.com/$Repo@$resolved"
+} else {
+    # No releases yet, so install the default branch. The ref has to be left off
+    # entirely rather than defaulted to "HEAD": pip turns "@HEAD" into
+    # `git checkout -b HEAD`, and git refuses to create a branch by that name.
+    $spec = "git+https://github.com/$Repo"
+    $resolved = 'default branch'
+}
 
 Write-Host ''
 Write-Host 'GPD-3303S Control' -ForegroundColor White -NoNewline
