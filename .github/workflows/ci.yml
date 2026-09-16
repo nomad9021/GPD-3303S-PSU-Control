@@ -1,13 +1,16 @@
 name: CI
 
 on:
+  # Only the default branch runs on push. Everything else is covered by the
+  # pull_request event; listening to both would run the whole matrix twice for
+  # every push to a branch that has a PR open.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
