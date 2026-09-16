@@ -1,0 +1,462 @@
+"""Serial transport and live polling for a GPD-series supply."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional
+
+import serial
+from serial.tools import list_ports
+
+from . import protocol
+from .protocol import ChannelMode, DeviceStatus, ModelSpec, TrackingMode
+from .simulator import SimulatedSupply
+
+log = logging.getLogger(__name__)
+
+SIMULATOR_PORT = "SIMULATOR"
+
+
+class DeviceError(RuntimeError):
+    """Raised for anything the caller should surface in the UI."""
+
+
+@dataclass
+class ChannelReading:
+    channel: int
+    voltage: float = 0.0
+    current: float = 0.0
+    voltage_set: float = 0.0
+    current_set: float = 0.0
+    mode: ChannelMode = ChannelMode.CV
+
+    @property
+    def power(self) -> float:
+        return self.voltage * self.current
+
+    def to_dict(self) -> dict:
+        return {
+            "channel": self.channel,
+            "voltage": round(self.voltage, 4),
+            "current": round(self.current, 4),
+            "power": round(self.power, 4),
+            "voltage_set": round(self.voltage_set, 3),
+            "current_set": round(self.current_set, 3),
+            "mode": self.mode.value,
+        }
+
+
+@dataclass
+class ProtectionLimits:
+    """Software-side trip points, evaluated on every poll.
+
+    The instrument has no programmable OVP/OCP of its own, so the host enforces
+    these by dropping the output the moment a reading exceeds a limit.
+    """
+
+    over_voltage: Optional[float] = None
+    over_current: Optional[float] = None
+    over_power: Optional[float] = None
+    enabled: bool = False
+
+    def check(self, reading: ChannelReading) -> Optional[str]:
+        if not self.enabled:
+            return None
+        if self.over_voltage is not None and reading.voltage > self.over_voltage:
+            return f"OVP: CH{reading.channel} reached {reading.voltage:.3f} V"
+        if self.over_current is not None and reading.current > self.over_current:
+            return f"OCP: CH{reading.channel} reached {reading.current:.3f} A"
+        if self.over_power is not None and reading.power > self.over_power:
+            return f"OPP: CH{reading.channel} reached {reading.power:.2f} W"
+        return None
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "over_voltage": self.over_voltage,
+            "over_current": self.over_current,
+            "over_power": self.over_power,
+        }
+
+
+@dataclass
+class Telemetry:
+    """One snapshot of the instrument, broadcast to every connected client."""
+
+    connected: bool = False
+    port: Optional[str] = None
+    identity: str = ""
+    model: str = protocol.DEFAULT_MODEL
+    output: bool = False
+    beep: bool = False
+    tracking: str = TrackingMode.INDEPENDENT.value
+    channels: List[dict] = field(default_factory=list)
+    timestamp: float = 0.0
+    error: Optional[str] = None
+    trip: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "connected": self.connected,
+            "port": self.port,
+            "identity": self.identity,
+            "model": self.model,
+            "output": self.output,
+            "beep": self.beep,
+            "tracking": self.tracking,
+            "channels": self.channels,
+            "timestamp": self.timestamp,
+            "error": self.error,
+            "trip": self.trip,
+        }
+
+
+def available_ports() -> List[dict]:
+    """List candidate serial ports, always including the simulator."""
+    ports = [
+        {
+            "device": SIMULATOR_PORT,
+            "description": "Built-in simulator (no hardware required)",
+            "hwid": "virtual",
+        }
+    ]
+    try:
+        for p in list_ports.comports():
+            ports.append(
+                {
+                    "device": p.device,
+                    "description": p.description or p.device,
+                    "hwid": p.hwid or "",
+                }
+            )
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.warning("port enumeration failed: %s", exc)
+    return ports
+
+
+class PowerSupply:
+    """Owns the serial link and the background polling loop.
+
+    All instrument access funnels through :meth:`_query` / :meth:`_write` under a
+    single lock, so UI commands and the poller can never interleave mid-command.
+    """
+
+    def __init__(self, poll_interval: float = 0.4, command_delay: float = 0.02):
+        self._serial = None
+        self._lock = threading.RLock()
+        self._poll_thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+        self.poll_interval = poll_interval
+        self.command_delay = command_delay
+
+        self.spec: ModelSpec = protocol.MODELS[protocol.DEFAULT_MODEL]
+        self.identity = ""
+        self.port: Optional[str] = None
+        self.status: DeviceStatus = DeviceStatus()
+        self.readings: Dict[int, ChannelReading] = {}
+        self.protection: Dict[int, ProtectionLimits] = {}
+        self.last_trip: Optional[str] = None
+        self.last_error: Optional[str] = None
+
+        self._listeners: List[Callable[[Telemetry], None]] = []
+
+    # -- lifecycle ---------------------------------------------------------- #
+
+    @property
+    def connected(self) -> bool:
+        return self._serial is not None
+
+    def subscribe(self, callback: Callable[[Telemetry], None]) -> Callable[[], None]:
+        self._listeners.append(callback)
+
+        def unsubscribe() -> None:
+            try:
+                self._listeners.remove(callback)
+            except ValueError:
+                pass
+
+        return unsubscribe
+
+    def connect(self, port: str, baudrate: int = 115200, timeout: float = 1.0) -> Telemetry:
+        self.disconnect()
+        with self._lock:
+            try:
+                if port == SIMULATOR_PORT:
+                    self._serial = SimulatedSupply()
+                else:
+                    self._serial = serial.Serial(
+                        port=port,
+                        baudrate=baudrate,
+                        bytesize=serial.EIGHTBITS,
+                        parity=serial.PARITY_NONE,
+                        stopbits=serial.STOPBITS_ONE,
+                        timeout=timeout,
+                        write_timeout=timeout,
+                    )
+                    # Some USB-serial bridges emit garbage on open; give the
+                    # instrument a moment and start from a clean buffer.
+                    time.sleep(0.15)
+                    self._serial.reset_input_buffer()
+            except (serial.SerialException, OSError) as exc:
+                self._serial = None
+                raise DeviceError(f"Could not open {port}: {exc}") from exc
+
+            self.port = port
+            self.identity = self._query(protocol.cmd_identify()) or ""
+            if not self.identity:
+                # Not fatal: a few units need a second attempt after power-up.
+                self.identity = self._query(protocol.cmd_identify()) or ""
+            self.spec = protocol.model_for_identity(self.identity)
+            self.readings = {
+                c.index: ChannelReading(channel=c.index) for c in self.spec.programmable_channels
+            }
+            self.protection = {
+                c.index: ProtectionLimits(
+                    over_voltage=c.max_voltage,
+                    over_current=c.max_current,
+                    over_power=c.max_voltage * c.max_current,
+                )
+                for c in self.spec.programmable_channels
+            }
+            self.last_trip = None
+            self.last_error = None
+            self._refresh_setpoints()
+
+        self._start_polling()
+        return self.snapshot()
+
+    def disconnect(self) -> None:
+        self._stop.set()
+        thread = self._poll_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        self._poll_thread = None
+        with self._lock:
+            if self._serial is not None:
+                try:
+                    self._serial.close()
+                except Exception:  # pragma: no cover - best effort
+                    pass
+                self._serial = None
+            self.port = None
+            self.identity = ""
+        self._broadcast()
+
+    # -- low-level I/O ------------------------------------------------------ #
+
+    def _write(self, command: str) -> None:
+        if self._serial is None:
+            raise DeviceError("Not connected")
+        with self._lock:
+            try:
+                self._serial.write((command + protocol.TERMINATOR).encode("ascii"))
+            except (serial.SerialException, OSError) as exc:
+                raise DeviceError(f"Write failed: {exc}") from exc
+            if self.command_delay:
+                time.sleep(self.command_delay)
+
+    def _query(self, command: str) -> str:
+        if self._serial is None:
+            raise DeviceError("Not connected")
+        with self._lock:
+            try:
+                self._serial.reset_input_buffer()
+                self._serial.write((command + protocol.TERMINATOR).encode("ascii"))
+                raw = self._serial.readline()
+            except (serial.SerialException, OSError) as exc:
+                raise DeviceError(f"Query failed: {exc}") from exc
+            if self.command_delay:
+                time.sleep(self.command_delay)
+        return raw.decode("ascii", errors="ignore").strip()
+
+    # -- instrument commands ------------------------------------------------ #
+
+    def _channel_spec(self, channel: int) -> protocol.ChannelSpec:
+        for c in self.spec.channels:
+            if c.index == channel:
+                return c
+        raise DeviceError(f"CH{channel} is not available on {self.spec.name}")
+
+    def set_voltage(self, channel: int, volts: float) -> None:
+        spec = self._channel_spec(channel)
+        value = spec.clamp_voltage(volts)
+        self._write(protocol.cmd_set_voltage(channel, value))
+        if channel in self.readings:
+            self.readings[channel].voltage_set = value
+
+    def set_current(self, channel: int, amps: float) -> None:
+        spec = self._channel_spec(channel)
+        value = spec.clamp_current(amps)
+        self._write(protocol.cmd_set_current(channel, value))
+        if channel in self.readings:
+            self.readings[channel].current_set = value
+
+    def set_output(self, enabled: bool) -> None:
+        self._write(protocol.cmd_output(enabled))
+        self.status.output = enabled
+        if enabled:
+            # Re-arming after a trip should clear the banner, not keep nagging.
+            self.last_trip = None
+
+    def set_beep(self, enabled: bool) -> None:
+        self._write(protocol.cmd_beep(enabled))
+        self.status.beep = enabled
+
+    def set_tracking(self, mode: TrackingMode) -> None:
+        self._write(protocol.cmd_tracking(mode))
+        self.status.tracking = mode
+
+    def save_memory(self, slot: int) -> None:
+        self._validate_slot(slot)
+        self._write(protocol.cmd_save(slot))
+
+    def recall_memory(self, slot: int) -> None:
+        self._validate_slot(slot)
+        self._write(protocol.cmd_recall(slot))
+        self._refresh_setpoints()
+
+    def _validate_slot(self, slot: int) -> None:
+        if not 1 <= slot <= self.spec.memory_slots:
+            raise DeviceError(f"Memory slot must be 1-{self.spec.memory_slots}")
+
+    def read_error(self) -> str:
+        return self._query(protocol.cmd_error())
+
+    def send_raw(self, command: str) -> Optional[str]:
+        """Run an arbitrary command; queries (ending in ``?``) return a reply."""
+        command = command.strip()
+        if not command:
+            raise DeviceError("Empty command")
+        if command.endswith("?"):
+            return self._query(command)
+        self._write(command)
+        return None
+
+    def set_protection(self, channel: int, limits: ProtectionLimits) -> None:
+        self._channel_spec(channel)
+        self.protection[channel] = limits
+
+    # -- polling ------------------------------------------------------------ #
+
+    def _refresh_setpoints(self) -> None:
+        for channel, reading in self.readings.items():
+            v = protocol.parse_number(self._query(protocol.cmd_get_voltage_setpoint(channel)))
+            i = protocol.parse_number(self._query(protocol.cmd_get_current_setpoint(channel)))
+            if v is not None:
+                reading.voltage_set = v
+            if i is not None:
+                reading.current_set = i
+
+    def _start_polling(self) -> None:
+        self._stop.clear()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, name="gpd-poll", daemon=True
+        )
+        self._poll_thread.start()
+
+    def _poll_loop(self) -> None:
+        while not self._stop.is_set():
+            started = time.monotonic()
+            try:
+                self._poll_once()
+                self.last_error = None
+            except DeviceError as exc:
+                self.last_error = str(exc)
+                log.warning("poll failed: %s", exc)
+                # A dead link will never recover by polling harder.
+                self._stop.set()
+                with self._lock:
+                    if self._serial is not None:
+                        try:
+                            self._serial.close()
+                        except Exception:
+                            pass
+                        self._serial = None
+            self._broadcast()
+            elapsed = time.monotonic() - started
+            self._stop.wait(max(0.05, self.poll_interval - elapsed))
+
+    def _poll_once(self) -> None:
+        for channel, reading in self.readings.items():
+            v = protocol.parse_number(self._query(protocol.cmd_measure_voltage(channel)))
+            i = protocol.parse_number(self._query(protocol.cmd_measure_current(channel)))
+            if v is not None:
+                reading.voltage = v
+            if i is not None:
+                reading.current = i
+
+        status = protocol.parse_status(self._query(protocol.cmd_status()))
+        if status is not None:
+            self.status = status
+            for channel, mode in status.channel_modes.items():
+                if channel in self.readings:
+                    self.readings[channel].mode = mode
+
+        self._enforce_protection()
+
+    def _enforce_protection(self) -> None:
+        if not self.status.output:
+            return
+        for channel, reading in self.readings.items():
+            limits = self.protection.get(channel)
+            if limits is None:
+                continue
+            trip = limits.check(reading)
+            if trip:
+                log.warning("protection tripped: %s", trip)
+                try:
+                    self.set_output(False)
+                except DeviceError:
+                    pass
+                self.status.output = False
+                self.last_trip = trip
+                return
+
+    # -- snapshots ---------------------------------------------------------- #
+
+    def snapshot(self) -> Telemetry:
+        return Telemetry(
+            connected=self.connected,
+            port=self.port,
+            identity=self.identity,
+            model=self.spec.name,
+            output=self.status.output,
+            beep=self.status.beep,
+            tracking=self.status.tracking.value,
+            channels=[r.to_dict() for r in self.readings.values()],
+            timestamp=time.time(),
+            error=self.last_error,
+            trip=self.last_trip,
+        )
+
+    def _broadcast(self) -> None:
+        snap = self.snapshot()
+        for listener in list(self._listeners):
+            try:
+                listener(snap)
+            except Exception:  # pragma: no cover - a bad client must not kill polling
+                log.exception("telemetry listener failed")
+
+    def describe(self) -> dict:
+        """Static capability description for the UI to lay itself out from."""
+        return {
+            "model": self.spec.name,
+            "models": sorted(protocol.MODELS),
+            "memory_slots": self.spec.memory_slots,
+            "supports_tracking": self.spec.supports_tracking,
+            "baud_rates": protocol.SUPPORTED_BAUD_RATES,
+            "channels": [
+                {
+                    "index": c.index,
+                    "label": c.label or f"CH{c.index}",
+                    "max_voltage": c.max_voltage,
+                    "max_current": c.max_current,
+                }
+                for c in self.spec.programmable_channels
+            ],
+            "protection": {str(k): v.to_dict() for k, v in self.protection.items()},
+        }
