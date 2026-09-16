@@ -126,7 +126,23 @@ def test_apply_update_falls_back_to_the_default_branch_when_offline():
                 run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
                 result = updater.apply_update()
 
-    assert result["spec"].endswith("@HEAD")
+    assert result["spec"] == f"git+{updater.GIT_URL}"
+
+
+def test_upgrade_spec_never_pins_the_literal_head_ref():
+    """pip turns ``@HEAD`` into ``git checkout -b HEAD``, which git rejects.
+
+    With no release to pin to, the ref must be omitted so the default branch is
+    installed instead.
+    """
+    assert updater.upgrade_spec() == f"git+{updater.GIT_URL}"
+    assert "@" not in updater.upgrade_spec().rsplit("/", 1)[-1]
+    assert updater.upgrade_spec("v1.2.3") == f"git+{updater.GIT_URL}@v1.2.3"
+
+
+def test_upgrade_spec_honours_an_explicit_ref_override(monkeypatch):
+    monkeypatch.setenv("GPD3303S_UPDATE_REF", "some-branch")
+    assert updater.upgrade_spec() == f"git+{updater.GIT_URL}@some-branch"
 
 
 def test_apply_update_reports_a_failing_command():
