@@ -1,15 +1,16 @@
 # GPD Control
 
-A modern control panel for **GW Instek GPD-series** programmable DC power supplies —
+A desktop application for **GW Instek GPD-series** programmable DC power supplies —
 a replacement for the bundled Windows software, with a cleaner interface, real
 light and dark themes, live charting, data logging, and a step sequencer.
 
-Runs on Windows, macOS and Linux. One-line install, and it updates itself.
+It opens in its own application window, finds your supply on its own, and
+updates itself. Runs on Windows, macOS and Linux.
 
 | | |
 |---|---|
 | **Supported** | GPD-2303S · GPD-3303S · GPD-3303D · GPD-4303S |
-| **Connection** | USB (virtual COM port) or RS-232, 9600 / 57600 / 115200 baud |
+| **Connection** | USB (virtual COM port) or RS-232, 9600 / 57600 / 115200 baud (9600 from the factory) |
 | **Requires** | Python 3.9+ (the installer sets up its own environment) |
 
 ---
@@ -38,8 +39,22 @@ Then:
 gpd3303s
 ```
 
-The app starts a local server and opens your browser. Nothing is exposed to the
-network: it binds to `127.0.0.1` only.
+On Linux the installer also adds **GPD Control** to your applications menu, so
+you can launch it like any other program.
+
+### It is an application, not a web page
+
+The window is a real OS application window — its own taskbar entry and icon, no
+browser, no address bar, no tabs. The interface is drawn with HTML inside the
+system's webview (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS),
+the same approach VS Code and Slack use.
+
+Internally it talks to a small local server, which binds to `127.0.0.1` on a
+random port and is never exposed to the network.
+
+If you would rather use a browser — on a headless machine, or to reach the
+instrument from a different computer — `gpd3303s --web` serves the same
+interface instead.
 
 ### No hardware yet?
 
@@ -57,12 +72,25 @@ without a supply on the bench.
 
 ### Connecting
 
-Pick a port from the dropdown and press **Connect**. On Windows the supply shows
-up as a `COM` port once GW Instek's USB driver is installed; on Linux it is
-usually `/dev/ttyUSB0`, on macOS `/dev/tty.usbserial-*`.
+**You should not have to do anything.** On launch the app searches every serial
+port at every supported baud rate for something that answers `*IDN?` as a GPD,
+and connects to it. If you plug the supply in later, press **Find supply**.
 
-The baud rate must match the instrument's own setting (`Utility` on the front
-panel). 115200 is the factory default.
+Failing that, pick a port and baud rate manually and press **Connect**. On
+Windows the supply appears as a `COM` port once GW Instek's USB driver is
+installed; on Linux it is usually `/dev/ttyUSB0`, on macOS
+`/dev/tty.usbserial-*`.
+
+The baud rate has to match the instrument's own setting (`Utility` on the front
+panel). **The factory default is 9600** — a mismatch is the usual reason a
+connection appears to succeed but every reading stays at zero, which is exactly
+what auto-detection avoids.
+
+From a terminal, `gpd3303s --detect` reports what it finds and exits.
+
+On connect the app sends `REMOTE`, which is what lets the instrument accept
+setpoints from the host; on disconnect it sends `LOCAL` to give the front panel
+back. Quitting the app always hands control back to the panel.
 
 > **Linux permissions.** Opening `/dev/ttyUSB*` requires membership of the
 > `dialout` group:
@@ -153,12 +181,14 @@ Turn the background check off in the app's settings (it's stored in
 ## Command line
 
 ```
-gpd3303s                     start the app and open a browser
-gpd3303s --simulate          auto-connect to the built-in simulator
-gpd3303s --connect COM3      auto-connect to a port at startup
-gpd3303s --list-ports        print detected serial ports
-gpd3303s --no-browser        start the server without opening a browser
-gpd3303s --port 9000         serve on a different port
+gpd3303s                     open the desktop window (finds the supply for you)
+gpd3303s --web               serve the interface in a browser instead
+gpd3303s --simulate          use the built-in simulator
+gpd3303s --detect            find an attached supply, print it, and exit
+gpd3303s --connect COM3      connect to a specific port at startup
+gpd3303s --no-autoconnect    do not search for an instrument at startup
+gpd3303s --list-ports        print every detected serial port
+gpd3303s --gui-backend       print the desktop renderer in use
 gpd3303s --where             print config and log locations
 gpd3303s --check-update      check for a newer release
 gpd3303s --update            install the newest release
@@ -187,6 +217,8 @@ newline-terminated, where only queries produce a response.
 | `SAV<n>` / `RCL<n>` | Save / recall memory 1–4 |
 | `STATUS?` | Eight status bits |
 | `ERR?` | Last error |
+| `REMOTE` / `LOCAL` | Take / release host control |
+| `BAUD<n>` | `0` 115200, `1` 57600, `2` 9600 |
 
 `STATUS?` returns eight `0`/`1` characters, least-significant bit first:
 
@@ -202,6 +234,18 @@ newline-terminated, where only queries produce a response.
 Firmware revisions differ in whether measurements carry a unit suffix
 (`5.000` vs `5.000V`), so every response is parsed leniently.
 
+Other details taken from the manual and enforced in `tests/test_manual_conformance.py`:
+
+* Commands are capped at **15 characters**, are case-insensitive, and terminate
+  with `\n` (or `\r\n`).
+* Minimum response time is **10 ms at 115200 baud**, and longer on slower links,
+  so the inter-command delay scales with the negotiated rate.
+* Rated output is **0–30 V / 0–3 A** per main channel (60 V in series, 6 A in
+  parallel). The command parser accepts up to 32 V / 3.2 A, but setpoints are
+  clamped to the rated figures.
+* On the GPD-3303S, CH3 is a fixed 2.5 / 3.3 / 5 V rail switched on the front
+  panel — there is no remote command for it, so it is not shown.
+
 ---
 
 ## Development
@@ -209,8 +253,8 @@ Firmware revisions differ in whether measurements carry a unit suffix
 ```sh
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
-uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 72 tests, no hardware needed
+uv venv && uv pip install -e ".[dev,desktop]"
+uv run pytest                    # 136 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 
@@ -224,6 +268,7 @@ Layout:
 | `src/gpd3303s/server.py` | HTTP API and SSE telemetry stream |
 | `src/gpd3303s/sequencer.py` | Timed setpoint sequences |
 | `src/gpd3303s/recorder.py` | CSV logging |
+| `src/gpd3303s/desktop.py` | Native window, and the server that backs it |
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
 | `src/gpd3303s/web/` | UI — plain HTML, CSS and ES modules, no build step |
 
@@ -242,13 +287,31 @@ and a table view.
 `dmesg` after plugging in (Linux). `gpd3303s --list-ports` shows what the app can
 see.
 
-**Connects but readings stay at zero.** The baud rate probably doesn't match the
-instrument's `Utility` setting. Try 115200, 57600, then 9600.
+**Connects but readings stay at zero.** The baud rate doesn't match the
+instrument's `Utility` setting. Press **Find supply**, which tries every rate,
+or set it by hand — the factory default is 9600.
 
 **"Permission denied" on Linux.** Add yourself to the `dialout` group (above).
 
 **Values look stale.** Lower the poll interval in the Monitor toolbar. Very short
-intervals over a slow serial link can queue up; 2.5 Hz is a good default.
+intervals over a slow serial link can queue up; 2.5 Hz is a good default. At
+9600 baud each poll needs noticeably longer than at 115200.
+
+**It opens in a browser instead of a window.** No system webview was found. Run
+`gpd3303s --gui-backend` to confirm, then install one:
+
+```sh
+sudo apt install gir1.2-webkit2-4.1 python3-gi     # Debian / Ubuntu
+sudo dnf install webkit2gtk4.1 python3-gobject     # Fedora
+```
+
+Or install the self-contained Qt renderer instead, which needs no system
+packages: `pip install "gpd3303s-control[desktop-qt]"`.
+
+**The front panel is locked after using the app.** The instrument stays in
+remote mode until it is told otherwise. The app sends `LOCAL` when it
+disconnects, so use Disconnect or close the window; if it was killed outright,
+press `Local` on the panel or power-cycle it.
 
 ---
 

@@ -93,8 +93,11 @@ MODELS: Dict[str, ModelSpec] = {
         channels=[
             ChannelSpec(1, 30.0, 3.0, label="CH1"),
             ChannelSpec(2, 30.0, 3.0, label="CH2"),
-            ChannelSpec(3, 5.0, 1.0, label="CH3"),
-            ChannelSpec(4, 15.0, 1.0, label="CH4"),
+            # CH3 is 0-5 V at up to 3 A, then 5.001-10 V at up to 1 A. The
+            # instrument enforces the step itself; the UI carries the outer
+            # bounds so a valid setpoint is never rejected here.
+            ChannelSpec(3, 10.0, 3.0, label="CH3"),
+            ChannelSpec(4, 5.0, 1.0, label="CH4"),
         ],
     ),
     "GPD-3303D": ModelSpec(
@@ -111,6 +114,33 @@ DEFAULT_MODEL = "GPD-3303S"
 #: Baud rates the instrument itself accepts, in the order used by ``BAUD<n>``.
 BAUD_CODES = {115200: 0, 57600: 1, 9600: 2}
 SUPPORTED_BAUD_RATES = [115200, 57600, 9600]
+
+#: The programming manual gives 9600 as the factory default, so it is tried
+#: first when probing an unknown instrument.
+DEFAULT_BAUD_RATE = 9600
+
+#: Probe order for auto-detection: the factory default, then the faster rates
+#: someone is likely to have switched to.
+BAUD_PROBE_ORDER = [9600, 115200, 57600]
+
+#: "Program mnemonic too long" is raised beyond this; every command this module
+#: builds stays well inside it, but raw console input is checked against it.
+MAX_COMMAND_LENGTH = 15
+
+#: Minimum response time per the manual, at 115200 baud. Slower links need more,
+#: which :func:`command_delay_for` scales.
+MIN_RESPONSE_S = 0.010
+
+
+def command_delay_for(baud_rate: int) -> float:
+    """Inter-command delay for a link speed.
+
+    The manual quotes a 10 ms minimum response time at 115200 and warns that
+    slower rates take longer, so the delay scales inversely with baud.
+    """
+    reference = 115200.0
+    scale = max(1.0, reference / float(baud_rate or reference))
+    return MIN_RESPONSE_S * scale
 
 
 def model_for_identity(identity: str) -> ModelSpec:
@@ -185,6 +215,16 @@ def cmd_status() -> str:
 
 def cmd_error() -> str:
     return "ERR?"
+
+
+def cmd_remote() -> str:
+    """Hand control to the host. Sent on connect."""
+    return "REMOTE"
+
+
+def cmd_local() -> str:
+    """Return control to the front panel. Sent on disconnect."""
+    return "LOCAL"
 
 
 def cmd_baud(rate: int) -> str:

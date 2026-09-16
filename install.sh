@@ -28,6 +28,7 @@ if [ -t 1 ]; then
 fi
 
 info()  { printf '%s==>%s %s\n' "$GREEN" "$RESET" "$1"; }
+log()   { [ -n "${GPD3303S_VERBOSE:-}" ] && printf '    %s\n' "$1" || true; }
 warn()  { printf '%s warn%s %s\n' "$YELLOW" "$RESET" "$1" >&2; }
 die()   { printf '%serror%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
 have()  { command -v "$1" >/dev/null 2>&1; }
@@ -53,9 +54,45 @@ resolve_ref() {
   printf '%s' "$tag"
 }
 
+METHOD=""
+
 record_method() {
+  METHOD="$1"
   mkdir -p "$MARKER_DIR"
   printf '%s' "$1" > "$MARKER_DIR/install-method"
+}
+
+# Put the app in the applications menu so it launches like any other program.
+install_desktop_entry() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+
+  apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+  mkdir -p "$apps_dir" "$icons_dir" || return 0
+
+  # Ship the icon out of the installed package so the menu entry has one.
+  icon_src=$("$LAUNCHER" --icon-path 2>/dev/null || true)
+  if [ -n "$icon_src" ] && [ -f "$icon_src" ]; then
+    cp -f "$icon_src" "$icons_dir/gpd3303s-control.svg" 2>/dev/null || true
+  fi
+
+  cat > "$apps_dir/gpd3303s-control.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=GPD Control
+GenericName=DC Power Supply Control
+Comment=Control a GW Instek GPD-series programmable DC power supply
+Exec=$LAUNCHER
+Icon=gpd3303s-control
+Terminal=false
+Categories=Development;Electronics;Engineering;
+Keywords=power supply;psu;gwinstek;gpd;instrument;serial;
+StartupNotify=true
+DESKTOP
+
+  command -v update-desktop-database >/dev/null 2>&1 &&
+    update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+  info "Added GPD Control to your applications menu"
 }
 
 link_launcher() {
@@ -85,6 +122,9 @@ fi
 
 # GPD3303S_SPEC lets you install from a local checkout or a custom requirement
 # instead of a published release, which is also how the test suite exercises this.
+# EXTRA selects the native-window dependencies; the caller can widen it.
+EXTRA="${GPD3303S_EXTRA:-desktop}"
+
 if [ -n "${GPD3303S_SPEC:-}" ]; then
   SPEC="$GPD3303S_SPEC"
   REF="$SPEC"
@@ -99,6 +139,15 @@ else
     SPEC="git+https://github.com/$REPO"
     REF="default branch"
   fi
+fi
+
+# pip and uv both accept "name[extra] @ <url>" for a direct reference.
+if [ -n "$EXTRA" ]; then
+  case "$SPEC" in
+    *" @ "*) ;;                                   # caller already qualified it
+    /*|.*)  SPEC="$SPEC[$EXTRA]" ;;               # a local path takes [extra] inline
+    *)      SPEC="gpd3303s-control[$EXTRA] @ $SPEC" ;;
+  esac
 fi
 
 printf '\n%sGPD-3303S Control%s — installing %s\n\n' "$BOLD" "$RESET" "$REF"
@@ -145,6 +194,47 @@ fi
 # catching that here turns a silent mis-install into a clear failure.
 LAUNCHER="$BIN_DIR/gpd3303s"
 [ -x "$LAUNCHER" ] || die "installed, but no launcher was created at $LAUNCHER"
+
+# ---------------------------------------------------------------------------
+# The native window needs a renderer. On Linux that is usually the GTK/WebKit2
+# system packages; where those are absent, fall back to the self-contained Qt
+# wheels rather than dropping the user into a browser.
+# ---------------------------------------------------------------------------
+ensure_gui_backend() {
+  backend=$("$LAUNCHER" --gui-backend 2>/dev/null || true)
+  if [ -n "$backend" ] && [ "$backend" != "none" ]; then
+    info "Desktop window renderer: $backend"
+    return 0
+  fi
+
+  info "No system webview found; adding the Qt renderer (this one is large)"
+  # The [...] patterns below are quoted so the shell treats them as literal
+  # text; unquoted, "[desktop]" is a character class and matches a single char.
+  qt_spec="$SPEC"
+  case "$qt_spec" in
+    "gpd3303s-control[desktop] @ "*) qt_spec="gpd3303s-control[desktop-qt] @ ${qt_spec#*@ }" ;;
+    *"[desktop]")                    qt_spec="${qt_spec%"[desktop]"}[desktop-qt]" ;;
+  esac
+  log "installing Qt renderer from: $qt_spec"
+
+  case "$METHOD" in
+    uv-tool) UV_TOOL_BIN_DIR="$BIN_DIR" uv tool install --force "$qt_spec" || true ;;
+    pipx)    PIPX_BIN_DIR="$BIN_DIR" pipx install --force "$qt_spec" || true ;;
+    venv)    "$VENV_DIR/bin/python" -m pip install --quiet --upgrade "$qt_spec" || true ;;
+  esac
+
+  backend=$("$LAUNCHER" --gui-backend 2>/dev/null || true)
+  if [ -n "$backend" ] && [ "$backend" != "none" ]; then
+    info "Desktop window renderer: $backend"
+  else
+    warn "No desktop renderer available; 'gpd3303s' will open in your browser."
+    printf '       On Debian/Ubuntu:  sudo apt install gir1.2-webkit2-4.1 python3-gi\n'
+    printf '       On Fedora:         sudo dnf install webkit2gtk4.1 python3-gobject\n\n'
+  fi
+}
+
+ensure_gui_backend
+install_desktop_entry
 
 # ---------------------------------------------------------------------------
 # Serial port access on Linux needs group membership, which trips up most users.

@@ -404,6 +404,7 @@ function setConnected(connected, telemetry) {
   $("#port-select").disabled = connected;
   $("#baud-select").disabled = connected;
   $("#refresh-ports").disabled = connected;
+  $("#detect-btn").disabled = connected;
 }
 
 function applyTelemetry(telemetry) {
@@ -750,6 +751,28 @@ function connectStream() {
 
 function wireGlobalControls() {
   $("#connect-btn").addEventListener("click", toggleConnection);
+
+  $("#detect-btn").addEventListener("click", async () => {
+    const button = $("#detect-btn");
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.textContent = "Searching…";
+    try {
+      // Probing walks every port and baud rate, so this can take a few seconds.
+      const result = await api("/api/detect", { method: "POST" });
+      state.device = result.device;
+      buildChannels(result.device.channels);
+      applyTelemetry(result.telemetry);
+      await refreshPorts(result.found.port);
+      $("#baud-select").value = String(result.found.baud_rate);
+      toast(`Found ${result.found.identity} on ${result.found.port} at ${result.found.baud_rate} baud`, "success", 6000);
+    } catch (error) {
+      toast(error.message, "error", 7000);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = original;
+    }
+  });
   $("#refresh-ports").addEventListener("click", () => refreshPorts().catch(() => {}));
 
   $("#output-toggle").addEventListener("click", async () => {

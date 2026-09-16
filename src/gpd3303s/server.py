@@ -134,12 +134,15 @@ def _error(exc: Exception, status: int = 400) -> JSONResponse:
 
 
 def create_app(
-    settings: Optional[Settings] = None, auto_connect: Optional[str] = None
+    settings: Optional[Settings] = None,
+    auto_connect: Optional[str] = None,
+    autodetect: bool = False,
 ) -> FastAPI:
     """Build the application.
 
     ``auto_connect`` names a port to open as soon as the server starts, which is
-    how ``--simulate`` and ``--connect`` are wired.
+    how ``--simulate`` and ``--connect`` are wired. ``autodetect`` instead hunts
+    for an attached instrument, so the app comes up already connected.
     """
     settings = settings or Settings()
     state = AppState(settings)
@@ -150,11 +153,20 @@ def create_app(
         if auto_connect:
             try:
                 await asyncio.to_thread(
-                    state.supply.connect, auto_connect, int(settings.get("baud_rate", 115200))
+                    state.supply.connect,
+                    auto_connect,
+                    int(settings.get("baud_rate", protocol.DEFAULT_BAUD_RATE)),
                 )
                 log.info("connected to %s", auto_connect)
             except DeviceError as exc:
                 log.error("auto-connect to %s failed: %s", auto_connect, exc)
+        elif autodetect:
+            try:
+                telemetry = await asyncio.to_thread(state.supply.autoconnect)
+                if telemetry is None:
+                    log.info("no instrument detected; waiting for a manual connection")
+            except DeviceError as exc:
+                log.warning("auto-detect failed: %s", exc)
         try:
             yield
         finally:
@@ -178,6 +190,7 @@ def create_app(
             "models": sorted(protocol.MODELS),
             "baud_rates": protocol.SUPPORTED_BAUD_RATES,
             "simulator_port": SIMULATOR_PORT,
+            "default_baud": protocol.DEFAULT_BAUD_RATE,
             "data_dir": str(data_dir()),
             "settings": settings.all(),
             "device": state.supply.describe(),
@@ -185,6 +198,31 @@ def create_app(
             "recorder": state.recorder.state(),
             "sequence": state.sequencer.state(),
             "update": state.updater.info.to_dict(),
+        }
+
+    @app.post("/api/detect")
+    async def detect():
+        """Search the serial ports for a supply and connect to it."""
+        from .device import discover
+
+        found = await asyncio.to_thread(discover)
+        if not found:
+            return JSONResponse(
+                {"ok": False, "error": "No GPD supply found on any serial port."},
+                status_code=404,
+            )
+        try:
+            telemetry = await asyncio.to_thread(
+                state.supply.connect, found["port"], found["baud_rate"]
+            )
+        except DeviceError as exc:
+            return _error(exc)
+        settings.update({"last_port": found["port"], "baud_rate": found["baud_rate"]})
+        return {
+            "ok": True,
+            "found": found,
+            "telemetry": telemetry.to_dict(),
+            "device": state.supply.describe(),
         }
 
     @app.get("/api/ports")

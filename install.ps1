@@ -18,6 +18,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Package   = 'gpd3303s-control'
+# Windows renders the native window with the built-in WebView2 runtime, so the
+# plain desktop extra is enough; there is no Qt fallback to install.
+$Extra     = if ($env:GPD3303S_EXTRA) { $env:GPD3303S_EXTRA } else { 'desktop' }
 $MarkerDir = Join-Path $env:LOCALAPPDATA $Package
 $VenvDir   = Join-Path $MarkerDir 'venv'
 $BinDir    = Join-Path $env:LOCALAPPDATA 'Programs\GPD3303S'
@@ -92,6 +95,9 @@ if ($resolved) {
     $resolved = 'default branch'
 }
 
+# pip and uv both accept "name[extra] @ <url>" for a direct reference.
+if ($Extra) { $spec = "$Package[$Extra] @ $spec" }
+
 Write-Host ''
 Write-Host 'GPD-3303S Control' -ForegroundColor White -NoNewline
 Write-Host " — installing $resolved"
@@ -160,6 +166,16 @@ Write-Host ''
 Write-Host 'No hardware handy? Try the built-in simulator:'
 Write-Host ''
 Write-Host '    gpd3303s --simulate'
+Write-Host ''
+$backend = & $launcher.FullName --gui-backend 2>$null
+if ($backend -and $backend -ne 'none') {
+    Write-Info "Desktop window renderer: $backend"
+} else {
+    Write-Warn "No desktop renderer found; 'gpd3303s' will open in your browser."
+    Write-Host '       Install the Microsoft Edge WebView2 Runtime to get the native window:'
+    Write-Host '       https://developer.microsoft.com/microsoft-edge/webview2/'
+}
+
 Write-Host ''
 Write-Host 'On Windows the supply appears as a COM port once the GW Instek USB driver is installed.'
 Write-Host ''
