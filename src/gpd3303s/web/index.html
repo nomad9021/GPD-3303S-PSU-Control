@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>GPD-3303S Control</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232a78d6'/><path d='M18 5 L9 18 h6 l-1 9 9-13 h-6 z' fill='white'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== Top bar ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 L4 14h6l-1 8 9-12h-6z"/></svg>
+      </div>
+      <div class="brand__text">
+        <span class="brand__title">GPD Control</span>
+        <span class="brand__sub" id="device-identity">Not connected</span>
+      </div>
+    </div>
+
+    <div class="connbar">
+      <span class="status-dot" id="status-dot" role="img" aria-label="Disconnected"></span>
+      <select class="select" id="port-select" aria-label="Serial port"></select>
+      <button class="btn btn--icon btn--ghost" id="refresh-ports" title="Rescan serial ports" aria-label="Rescan serial ports">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+      <select class="select" id="baud-select" aria-label="Baud rate"></select>
+      <button class="btn btn--primary" id="connect-btn">Connect</button>
+
+      <div class="segmented" role="group" aria-label="Colour theme">
+        <button type="button" data-theme-choice="light" title="Light theme">Light</button>
+        <button type="button" data-theme-choice="system" title="Follow system theme">Auto</button>
+        <button type="button" data-theme-choice="dark" title="Dark theme">Dark</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===================== Banners ===================== -->
+  <div class="banner banner--critical" id="trip-banner" hidden role="alert">
+    <span class="banner__icon">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    </span>
+    <div class="banner__body">
+      <div class="banner__title">Protection tripped — output disabled</div>
+      <div class="banner__detail" id="trip-detail"></div>
+    </div>
+    <button class="btn btn--sm" id="trip-dismiss">Dismiss</button>
+  </div>
+
+  <div class="banner banner--info" id="update-banner" hidden>
+    <span class="banner__icon">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
+    </span>
+    <div class="banner__body">
+      <div class="banner__title" id="update-title">A new version is available</div>
+      <div class="banner__detail" id="update-detail"></div>
+    </div>
+    <a class="btn btn--sm" id="update-notes" href="#" target="_blank" rel="noopener">Release notes</a>
+    <button class="btn btn--sm btn--primary" id="update-apply">Update now</button>
+    <button class="btn btn--sm btn--ghost" id="update-dismiss" aria-label="Dismiss">✕</button>
+  </div>
+
+  <!-- ===================== Channels ===================== -->
+  <section class="channels" id="channels" aria-label="Output channels"></section>
+
+  <!-- ===================== Master bar ===================== -->
+  <section class="card masterbar" aria-label="Master controls">
+    <button class="output-toggle" id="output-toggle" aria-pressed="false" disabled>
+      <span class="output-toggle__led" aria-hidden="true"></span>
+      <span id="output-label">Output Off</span>
+    </button>
+
+    <div class="field-inline" id="tracking-group">
+      <span class="field-inline__label">Tracking</span>
+      <div class="segmented" role="group" aria-label="Channel tracking mode">
+        <button type="button" data-tracking="independent" aria-pressed="true">Independent</button>
+        <button type="button" data-tracking="series" aria-pressed="false">Series</button>
+        <button type="button" data-tracking="parallel" aria-pressed="false">Parallel</button>
+      </div>
+    </div>
+
+    <label class="switch">
+      <input type="checkbox" id="beep-toggle" disabled>
+      <span class="switch__track"></span>
+      <span class="field-inline__label">Beeper</span>
+    </label>
+
+    <div class="master-total">
+      <span class="field-inline__label">Total</span>
+      <span class="master-total__value" id="total-power">0.00</span>
+      <span class="muted">W</span>
+    </div>
+  </section>
+
+  <!-- ===================== Tabs ===================== -->
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" data-tab="monitor" aria-selected="true">Monitor</button>
+    <button role="tab" data-tab="sequencer" aria-selected="false">Sequencer</button>
+    <button role="tab" data-tab="memory" aria-selected="false">Memory &amp; Presets</button>
+    <button role="tab" data-tab="protection" aria-selected="false">Protection</button>
+    <button role="tab" data-tab="console" aria-selected="false">Console</button>
+  </nav>
+
+  <!-- ---------- Monitor ---------- -->
+  <section class="panel" id="panel-monitor" role="tabpanel">
+    <div class="chart-stack" id="chart-stack"></div>
+
+    <div class="card toolbar">
+      <button class="btn" id="record-btn" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="8"/></svg>
+        Start CSV log
+      </button>
+      <span class="muted" id="record-status">Not recording</span>
+      <a class="btn btn--sm" id="record-download" href="/api/recorder/download" download hidden>Download CSV</a>
+      <span class="spacer"></span>
+      <label class="field-inline">
+        <span class="field-inline__label">Window</span>
+        <select class="select" id="chart-window">
+          <option value="30">30 s</option>
+          <option value="60">1 min</option>
+          <option value="120" selected>2 min</option>
+          <option value="300">5 min</option>
+          <option value="900">15 min</option>
+        </select>
+      </label>
+      <label class="field-inline">
+        <span class="field-inline__label">Poll</span>
+        <select class="select" id="poll-interval">
+          <option value="0.2">5 Hz</option>
+          <option value="0.4" selected>2.5 Hz</option>
+          <option value="1">1 Hz</option>
+          <option value="2">0.5 Hz</option>
+        </select>
+      </label>
+      <button class="btn btn--sm" id="clear-chart">Clear</button>
+      <button class="btn btn--sm" id="toggle-table" aria-pressed="false">Table view</button>
+    </div>
+
+    <div class="card" id="table-card" hidden style="margin-top:14px">
+      <div class="card__head"><span class="card__title">Recent samples</span></div>
+      <div class="card__body" style="max-height:320px;overflow:auto;padding-top:0">
+        <table class="table" id="sample-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Sequencer ---------- -->
+  <section class="panel" id="panel-sequencer" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card__head">
+        <span class="card__title">Step sequencer</span>
+        <span class="muted">Apply timed setpoints — burn-in, ramps, load profiles</span>
+      </div>
+      <div class="card__body stack">
+        <div class="seq-progress"><div class="seq-progress__bar" id="seq-bar"></div></div>
+        <div class="row">
+          <span class="muted" id="seq-status">Idle</span>
+          <span class="spacer"></span>
+          <label class="field-inline">
+            <span class="field-inline__label">Loops</span>
+            <input class="input input--num" id="seq-loops" type="number" min="1" max="9999" value="1" style="width:74px">
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="seq-stop-output" checked>
+            <span class="switch__track"></span>
+            <span class="field-inline__label">Output off at end</span>
+          </label>
+        </div>
+        <div class="seq-grid" id="seq-steps"></div>
+        <div class="row">
+          <button class="btn btn--sm" id="seq-add">+ Add step</button>
+          <button class="btn btn--sm" id="seq-export">Export JSON</button>
+          <button class="btn btn--sm" id="seq-import">Import JSON</button>
+          <span class="spacer"></span>
+          <button class="btn btn--danger" id="seq-stop" hidden>Stop</button>
+          <button class="btn btn--primary" id="seq-run" disabled>Run sequence</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Memory & presets ---------- -->
+  <section class="panel" id="panel-memory" role="tabpanel" hidden>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card__head">
+          <span class="card__title">Instrument memory</span>
+          <span class="muted">M1–M4 stored in the supply</span>
+        </div>
+        <div class="card__body stack" id="memory-slots"></div>
+      </div>
+      <div class="card">
+        <div class="card__head">
+          <span class="card__title">Saved presets</span>
+          <span class="muted">Stored on this computer</span>
+        </div>
+        <div class="card__body stack">
+          <div class="row">
+            <input class="input" id="preset-name" placeholder="Preset name" style="flex:1">
+            <button class="btn" id="preset-save">Save current</button>
+          </div>
+          <div id="preset-list" class="stack"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Protection ---------- -->
+  <section class="panel" id="panel-protection" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card__head">
+        <span class="card__title">Software protection</span>
+        <span class="muted">Host-side trip points — the output drops within one poll of a breach</span>
+      </div>
+      <div class="card__body grid-2" id="protection-forms"></div>
+    </div>
+  </section>
+
+  <!-- ---------- Console ---------- -->
+  <section class="panel" id="panel-console" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card__head">
+        <span class="card__title">Command console</span>
+        <span class="muted">Raw instrument commands — queries end with “?”</span>
+      </div>
+      <div class="card__body stack">
+        <div class="console-log" id="console-log" aria-live="polite"></div>
+        <div class="row">
+          <input class="input" id="console-input" placeholder="e.g. *IDN?  ·  VSET1:5.00  ·  STATUS?" style="flex:1" disabled autocomplete="off" spellcheck="false">
+          <button class="btn btn--primary" id="console-send" disabled>Send</button>
+          <button class="btn btn--sm" id="console-clear">Clear</button>
+        </div>
+        <details>
+          <summary class="muted" style="cursor:pointer">Command reference</summary>
+          <table class="table" style="margin-top:8px">
+            <thead><tr><th>Command</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>*IDN?</code></td><td>Identify the instrument</td></tr>
+              <tr><td><code>VSET1:5.00</code></td><td>Set CH1 voltage to 5.00 V</td></tr>
+              <tr><td><code>VSET1?</code></td><td>Query the CH1 voltage setpoint</td></tr>
+              <tr><td><code>ISET2:1.500</code></td><td>Set CH2 current limit to 1.5 A</td></tr>
+              <tr><td><code>VOUT1?</code> / <code>IOUT1?</code></td><td>Measured CH1 output</td></tr>
+              <tr><td><code>OUT1</code> / <code>OUT0</code></td><td>Enable / disable the output</td></tr>
+              <tr><td><code>TRACK0|1|2</code></td><td>Independent / series / parallel</td></tr>
+              <tr><td><code>BEEP1</code> / <code>BEEP0</code></td><td>Beeper on / off</td></tr>
+              <tr><td><code>SAV1</code> / <code>RCL1</code></td><td>Save / recall memory slot</td></tr>
+              <tr><td><code>STATUS?</code></td><td>Eight status bits</td></tr>
+              <tr><td><code>ERR?</code></td><td>Last error message</td></tr>
+            </tbody>
+          </table>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <footer class="row muted" style="margin-top:22px">
+    <span id="footer-version">GPD Control</span>
+    <span class="spacer"></span>
+    <button class="btn btn--sm btn--ghost" id="check-update-btn">Check for updates</button>
+  </footer>
+</div>
+
+<div class="toast-host" id="toast-host" aria-live="polite"></div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
