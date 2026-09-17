@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gpd3303s-control"
 version = "1.0.0"
-description = "A modern cross-platform control panel for GW Instek GPD-series programmable DC power supplies."
+description = "A native desktop control panel for GW Instek GPD-series programmable DC power supplies."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -13,7 +13,7 @@ authors = [{ name = "GPD-3303S Control contributors" }]
 keywords = ["gwinstek", "gpd-3303s", "power-supply", "scpi", "serial", "instrument"]
 classifiers = [
   "Development Status :: 4 - Beta",
-  "Environment :: Web Environment",
+  "Environment :: X11 Applications :: Qt",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
@@ -22,29 +22,12 @@ classifiers = [
 ]
 dependencies = [
   "pyserial>=3.5",
-  "fastapi>=0.110",
-  "uvicorn>=0.27",
+  "PySide6-Essentials>=6.5",
   "packaging>=23.0",
 ]
 
 [project.optional-dependencies]
-# The native window. pywebview renders through the OS webview: WebKitGTK on
-# Linux, WebView2 on Windows, WKWebView on macOS.
-desktop = [
-  "pywebview>=5.0",
-  "pyobjc-core>=10.0; sys_platform == 'darwin'",
-  "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
-  "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
-]
-# Fallback renderer for Linux boxes without the GTK/WebKit2 system packages.
-# Self-contained but large, so it is kept out of the default desktop extra.
-desktop-qt = [
-  "pywebview>=5.0",
-  "qtpy>=2.4",
-  "PySide6-Essentials>=6.5",
-  "PySide6-Addons>=6.5",
-]
-dev = ["pytest>=7.0", "httpx>=0.27"]
+dev = ["pytest>=7.0"]
 
 [project.scripts]
 gpd3303s = "gpd3303s.cli:main"
@@ -55,6 +38,8 @@ Issues = "https://github.com/nomad9021/GPD-3303S-PSU-Control/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gpd3303s"]
+# The window icon is data, not code, so it needs naming explicitly.
+artifacts = ["src/gpd3303s/resources/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

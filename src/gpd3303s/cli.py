@@ -1,53 +1,20 @@
-"""Command-line entry point: launches the local server and opens the UI."""
+"""Command-line entry point.
+
+Launches the native window. There is no web interface and no local server.
+"""
 
 from __future__ import annotations
 
 import argparse
 import logging
-import socket
 import sys
-import threading
-import time
-import webbrowser
+from typing import Optional
 
 from . import __version__
 from .config import Settings, config_dir, data_dir
-from .device import SIMULATOR_PORT, available_ports
-from .updater import check_for_update, apply_update
+from .device import SIMULATOR_PORT, PowerSupply, available_ports, discover
 
 log = logging.getLogger(__name__)
-
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8777
-
-
-def _free_port(host: str, preferred: int) -> int:
-    """Return ``preferred`` if bindable, else an ephemeral port.
-
-    Two instances sharing a serial port would fight, but running a second copy
-    against the simulator is legitimate, so fall back rather than refuse.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((host, preferred))
-            return preferred
-        except OSError:
-            pass
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((host, 0))
-        return sock.getsockname()[1]
-
-
-def _open_browser(url: str, delay: float = 1.0) -> None:
-    def target() -> None:
-        time.sleep(delay)
-        try:
-            webbrowser.open(url)
-        except Exception as exc:  # pragma: no cover - headless environments
-            log.info("could not open a browser automatically: %s", exc)
-
-    threading.Thread(target=target, daemon=True).start()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,34 +23,29 @@ def build_parser() -> argparse.ArgumentParser:
         description="Control panel for GW Instek GPD-series DC power supplies.",
     )
     parser.add_argument("--version", action="version", version=f"gpd3303s-control {__version__}")
-    parser.add_argument("--host", default=DEFAULT_HOST, help="interface to bind (default: %(default)s)")
-    # None means "pick one": the desktop window takes any free port, and the
-    # browser mode falls back to DEFAULT_PORT.
-    parser.add_argument("--port", type=int, default=None,
-                        help=f"TCP port (browser mode default: {DEFAULT_PORT})")
-    parser.add_argument("--web", action="store_true",
-                        help="serve the UI in your browser instead of a desktop window")
-    parser.add_argument("--no-browser", action="store_true",
-                        help="with --web, do not open a browser automatically")
-    parser.add_argument("--simulate", action="store_true", help="auto-connect to the built-in simulator")
-    parser.add_argument("--connect", metavar="PORT", help="auto-connect to this serial port at startup")
+    parser.add_argument("--simulate", action="store_true",
+                        help="use the built-in simulator instead of real hardware")
+    parser.add_argument("--connect", metavar="PORT",
+                        help="connect to this serial port at startup")
     parser.add_argument("--no-autoconnect", action="store_true",
                         help="do not search for an instrument at startup")
-    parser.add_argument("--list-ports", action="store_true", help="print detected serial ports and exit")
+    parser.add_argument("--list-ports", action="store_true",
+                        help="print detected serial ports and exit")
     parser.add_argument("--detect", action="store_true",
                         help="search the serial ports for a GPD supply and exit")
-    parser.add_argument("--check-update", action="store_true", help="check for a newer release and exit")
-    parser.add_argument("--update", action="store_true", help="upgrade to the latest release and exit")
-    parser.add_argument("--where", action="store_true", help="print config and log locations and exit")
-    parser.add_argument("--gui-backend", action="store_true",
-                        help="print the detected desktop window backend and exit")
+    parser.add_argument("--where", action="store_true",
+                        help="print config and log locations and exit")
+    parser.add_argument("--check-update", action="store_true",
+                        help="check for a newer release and exit (needs a network)")
+    parser.add_argument("--update", action="store_true",
+                        help="upgrade to the latest release and exit (needs a network)")
     parser.add_argument("--icon-path", action="store_true",
                         help="print the path to the application icon and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     return parser
 
 
-def main(argv=None) -> int:
+def main(argv: Optional[list] = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -97,8 +59,6 @@ def main(argv=None) -> int:
         return 0
 
     if args.detect:
-        from .device import discover
-
         found = discover()
         if found:
             print(f"Found {found['identity']}")
@@ -110,27 +70,23 @@ def main(argv=None) -> int:
         return 1
 
     if args.icon_path:
-        from pathlib import Path
+        from .ui.app import icon_path
 
-        icon = Path(__file__).parent / "web" / "icon.svg"
-        if not icon.exists():
+        icon = icon_path()
+        if icon is None:
             return 1
         print(icon)
         return 0
-
-    if args.gui_backend:
-        from . import desktop
-
-        backend = desktop.gui_available()
-        print(backend or "none")
-        return 0 if backend else 1
 
     if args.where:
         print(f"config: {config_dir() / 'settings.json'}")
         print(f"logs:   {data_dir() / 'logs'}")
         return 0
 
+    # The two network-dependent commands. Everything else works offline.
     if args.check_update:
+        from .updater import check_for_update
+
         info = check_for_update()
         if info.error:
             print(f"Update check failed: {info.error}")
@@ -144,50 +100,66 @@ def main(argv=None) -> int:
         return 0
 
     if args.update:
+        from .updater import apply_update
+
         result = apply_update()
         print(result.get("output") or ("Updated." if result["ok"] else "Update failed."))
         return 0 if result["ok"] else 1
 
-    # Imported late so `--list-ports` and friends stay fast.
-    import uvicorn
+    return run_app(args)
 
-    from .server import create_app
+
+def run_app(args) -> int:
+    """Open the window. Imported late so the query flags above stay fast."""
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        print(
+            "PySide6 is required for the interface but is not installed.\n"
+            "Install it with:  pip install PySide6-Essentials",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .ui.app import MainWindow, icon_path
+    from .ui.theme import apply as apply_theme, resolve as resolve_theme
 
     settings = Settings()
-    auto_port = SIMULATOR_PORT if args.simulate else args.connect
-    # With no port named, look for a real instrument so the app is usable
-    # without anyone choosing a port or guessing a baud rate.
-    autodetect = not (auto_port or args.no_autoconnect)
-    app = create_app(settings, auto_connect=auto_port, autodetect=autodetect)
+    supply = PowerSupply(poll_interval=float(settings.get("poll_interval", 0.4)))
 
-    # Default to a real application window; --web keeps the browser behaviour.
-    if not args.web:
-        from . import desktop
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName("GPD Control")
+    app.setApplicationDisplayName("GPD Control")
+    app.setDesktopFileName("gpd3303s-control")
+    icon = icon_path()
+    if icon:
+        from PySide6.QtGui import QIcon
 
+        app.setWindowIcon(QIcon(str(icon)))
+    apply_theme(app, resolve_theme(settings.get("theme", "system")))
+
+    window = MainWindow(settings, supply)
+    window.show()
+
+    port = SIMULATOR_PORT if args.simulate else args.connect
+    if port:
         try:
-            print(f"\n  GPD Control {__version__}\n")
-            return desktop.run(app, host=args.host, port=args.port, debug=args.verbose)
-        except desktop.DesktopUnavailable as exc:
-            log.warning("%s", exc)
-            log.warning("falling back to the browser interface")
+            supply.connect(port, int(settings.get("baud_rate", 9600)))
+            window._after_connect()
+        except Exception as exc:  # noqa: BLE001 - surfaced in the window
+            log.error("could not connect to %s: %s", port, exc)
+    elif not args.no_autoconnect:
+        # Find the instrument without the user choosing a port or guessing a
+        # baud rate. Entirely local: it only probes serial ports.
+        found = discover()
+        if found:
+            try:
+                supply.connect(found["port"], found["baud_rate"])
+                window._after_connect()
+            except Exception as exc:  # noqa: BLE001
+                log.error("could not connect to %s: %s", found["port"], exc)
 
-    requested = args.port or DEFAULT_PORT
-    bind_port = _free_port(args.host, requested)
-    if bind_port != requested:
-        log.info("port %s is busy; using %s instead", requested, bind_port)
-    url = f"http://{args.host}:{bind_port}/"
-
-    print(f"\n  GPD Control {__version__}")
-    print(f"  {url}\n")
-
-    if not args.no_browser:
-        _open_browser(url)
-
-    try:
-        uvicorn.run(app, host=args.host, port=bind_port, log_level="warning", access_log=False)
-    except KeyboardInterrupt:  # pragma: no cover
-        pass
-    return 0
+    return app.exec()
 
 
 if __name__ == "__main__":

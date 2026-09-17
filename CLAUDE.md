@@ -1,8 +1,22 @@
 # GPD Control — notes for Claude
 
-A desktop application for GW Instek GPD-series programmable DC power supplies.
-Python backend driving the serial link; the UI is HTML rendered in the OS
-webview through pywebview, not a web page.
+A native desktop application for GW Instek GPD-series programmable DC power
+supplies. Python throughout: a serial/instrument layer with no UI knowledge, and
+a PySide6 (Qt) widget UI on top.
+
+## There is no web version
+
+The UI is **native Qt widgets**. There is no HTML, no embedded browser, no
+webview, no local HTTP server, and no `--web` flag. The app must stay fully
+usable offline; the only network call in the whole program is the optional
+release check, which fails quietly.
+
+`tests/test_ui.py::TestNoWebAnywhere` enforces this — it asserts that
+`gpd3303s.server` and `gpd3303s.desktop` cannot be imported, that no web
+framework appears in `pyproject.toml`, that the CLI offers no web flags, and
+that nothing opens a socket. The CI wheel check fails if any web asset is
+packaged. Do not weaken those tests; they exist because the UI was once a web
+page and that was explicitly rejected.
 
 ## Keep the README current
 
@@ -13,12 +27,13 @@ a bug like any other. Changes that affect it include:
 - Anything a user types: CLI flags, install commands, the one-liner.
 - Anything a user sees: the window layout, views, status bar, controls.
 - Supported models, channel ratings, baud rates, or protocol behaviour.
-- Install or update mechanics, including the extras and renderer fallback.
+- Install or update mechanics, including the desktop entry and the icon.
 - Troubleshooting: if a failure mode is found and fixed, say so there.
 
 Not every change touches it — an internal refactor or a new test usually does
 not. Judge by whether a user's experience or instructions changed. When in
-doubt, re-read the affected README section and confirm it is still true.
+doubt, re-read the affected README section and confirm it is still true. The
+test count quoted under Development is part of that.
 
 ## Layout
 
@@ -27,21 +42,43 @@ doubt, re-read the affected README section and confirm it is still true.
 | `src/gpd3303s/protocol.py` | Command encoding and response parsing. No I/O. |
 | `src/gpd3303s/device.py` | Serial transport, polling thread, protection watchdog, discovery |
 | `src/gpd3303s/simulator.py` | In-process fake supply |
-| `src/gpd3303s/server.py` | HTTP API and SSE telemetry |
-| `src/gpd3303s/desktop.py` | Native window and the server behind it |
 | `src/gpd3303s/sequencer.py` | Timed setpoint sequences |
 | `src/gpd3303s/recorder.py` | CSV logging |
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
-| `src/gpd3303s/web/` | UI — plain HTML, CSS and ES modules, no build step |
+| `src/gpd3303s/cli.py` | Argument parsing; builds the app and runs the Qt loop |
+| `src/gpd3303s/ui/app.py` | `MainWindow`: app bar, sidebar, instrument panel, status bar |
+| `src/gpd3303s/ui/views.py` | Monitor, Sequencer, Memory, Protection, Console |
+| `src/gpd3303s/ui/channel.py` | Per-channel readouts and setpoint controls |
+| `src/gpd3303s/ui/chart.py` | Strip chart drawn with `QPainter` |
+| `src/gpd3303s/ui/theme.py` | Light/dark palettes, `QPalette` and the Qt stylesheet |
+| `src/gpd3303s/ui/bridge.py` | Device callbacks → Qt signals, for thread safety |
+| `src/gpd3303s/resources/` | Application icon (`icon.png`, `icon.svg`) |
+
+The dependency arrow points one way: `ui/` imports the instrument layer, never
+the reverse. Anything under `ui/` is the only place PySide6 may be imported, and
+`cli.py` imports it late so `--detect`, `--list-ports` and friends still work if
+Qt is missing.
 
 ## Commands
 
 ```sh
-uv venv && uv pip install -e ".[dev,desktop]"
-uv run pytest                 # no hardware needed; the simulator covers it
-uv run gpd3303s --simulate    # native window against the simulator
-uv run gpd3303s --web         # same UI in a browser, for headless work
+uv venv && uv pip install -e ".[dev]"
+uv run pytest                              # no hardware needed; the simulator covers it
+QT_QPA_PLATFORM=offscreen uv run pytest    # headless (this is what CI does)
+uv run gpd3303s --simulate                 # the app against the simulator
 ```
+
+Qt needs `libegl1 libxkbcommon-x11-0 libdbus-1-3` on a bare Linux image; CI
+installs them. For a real window on a headless box, `Xvfb :99 -screen 0
+1440x960x24` plus `DISPLAY=:99 QT_QPA_PLATFORM=xcb`.
+
+## Threading
+
+The device poller runs on its own thread and must never touch a widget.
+`ui/bridge.py` exists solely to convert its callbacks into Qt signals, which Qt
+queues onto the GUI thread. The update checker and the in-place upgrade do the
+same thing via `MainWindow.update_found` / `update_applied`. Any new background
+worker follows that pattern rather than calling into widgets directly.
 
 ## The protocol is specified, not guessed
 
@@ -61,13 +98,19 @@ manual settles and that are easy to get wrong:
 
 ## UI conventions
 
-The shell is a fixed app bar, sidebar, pinned instrument panel, scrolling view
-and status bar. `tests/test_ui_shell.py` asserts its structure — including that
-each shell region owns exactly one CSS rule, after `.toolbar` was once reused
-for two different things and silently broke the layout.
-
-Chart colours come from a palette validated for colour-vision separation in both
-themes. Never a dual-axis chart: one measure per axis.
+- The shell is an app bar, a sidebar, a pinned instrument panel, a stacked view
+  and a status bar. Sections live in `SECTIONS` and must match the stack order.
+- Qt stylesheets beat `QFont` sizes, and a per-widget stylesheet beats the
+  app-level one. Size a readout in its own stylesheet, not with `setPointSize`.
+- Setpoint widgets guard in-progress edits: polling must never overwrite a field
+  the user is typing in. Sliders send on release, not on every step — the link
+  can be 9600 baud.
+- Chart colours come from a palette validated for colour-vision separation in
+  both themes, and every series also carries a direct end label and a live-value
+  legend so colour is never the only cue. Never a dual-axis chart: one measure
+  per axis.
+- Stick to ASCII plus well-supported glyphs in widget text; some glyphs render
+  as boxes under the bundled Qt fonts.
 
 ## Releasing
 

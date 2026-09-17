@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from packaging.version import InvalidVersion, Version
 
@@ -218,9 +218,17 @@ def apply_update(tag: Optional[str] = None) -> dict:
 class UpdateChecker:
     """Caches the last result and refreshes it on a background thread."""
 
-    def __init__(self, enabled: bool = True, interval: float = CHECK_INTERVAL_S):
+    def __init__(
+        self,
+        enabled: bool = True,
+        interval: float = CHECK_INTERVAL_S,
+        on_update: Optional[Callable[["UpdateInfo"], None]] = None,
+    ):
         self.enabled = enabled
         self.interval = interval
+        # Called after every refresh, on the checker's own thread. The GUI hands
+        # in a Qt signal's emit, which marshals the result onto the UI thread.
+        self.on_update = on_update
         self._info = UpdateInfo(method=install_method())
         self._info.can_self_update = _upgrade_command(self._info.method) is not None
         self._lock = threading.Lock()
@@ -236,6 +244,11 @@ class UpdateChecker:
         info = check_for_update()
         with self._lock:
             self._info = info
+        if self.on_update is not None:
+            try:
+                self.on_update(info)
+            except Exception:  # pragma: no cover - a listener must not kill the thread
+                log.exception("update listener failed")
         return info
 
     def start(self) -> None:

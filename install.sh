@@ -68,12 +68,19 @@ install_desktop_entry() {
 
   apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
-  mkdir -p "$apps_dir" "$icons_dir" || return 0
+  pixmaps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
+  mkdir -p "$apps_dir" "$icons_dir" "$pixmaps_dir" || return 0
 
-  # Ship the icon out of the installed package so the menu entry has one.
+  # Ship the icon out of the installed package so the menu entry has one. The
+  # app reports one file; both sizes live beside it, and installing each into
+  # the theme directory it belongs to lets the icon scale in every menu.
   icon_src=$("$LAUNCHER" --icon-path 2>/dev/null || true)
   if [ -n "$icon_src" ] && [ -f "$icon_src" ]; then
-    cp -f "$icon_src" "$icons_dir/gpd3303s-control.svg" 2>/dev/null || true
+    icon_dir=$(dirname "$icon_src")
+    [ -f "$icon_dir/icon.png" ] &&
+      cp -f "$icon_dir/icon.png" "$pixmaps_dir/gpd3303s-control.png" 2>/dev/null || true
+    [ -f "$icon_dir/icon.svg" ] &&
+      cp -f "$icon_dir/icon.svg" "$icons_dir/gpd3303s-control.svg" 2>/dev/null || true
   fi
 
   cat > "$apps_dir/gpd3303s-control.desktop" <<DESKTOP
@@ -122,8 +129,8 @@ fi
 
 # GPD3303S_SPEC lets you install from a local checkout or a custom requirement
 # instead of a published release, which is also how the test suite exercises this.
-# EXTRA selects the native-window dependencies; the caller can widen it.
-EXTRA="${GPD3303S_EXTRA:-desktop}"
+# Extra dependency groups, if the caller wants any. None are needed.
+EXTRA="${GPD3303S_EXTRA:-}"
 
 if [ -n "${GPD3303S_SPEC:-}" ]; then
   SPEC="$GPD3303S_SPEC"
@@ -195,45 +202,6 @@ fi
 LAUNCHER="$BIN_DIR/gpd3303s"
 [ -x "$LAUNCHER" ] || die "installed, but no launcher was created at $LAUNCHER"
 
-# ---------------------------------------------------------------------------
-# The native window needs a renderer. On Linux that is usually the GTK/WebKit2
-# system packages; where those are absent, fall back to the self-contained Qt
-# wheels rather than dropping the user into a browser.
-# ---------------------------------------------------------------------------
-ensure_gui_backend() {
-  backend=$("$LAUNCHER" --gui-backend 2>/dev/null || true)
-  if [ -n "$backend" ] && [ "$backend" != "none" ]; then
-    info "Desktop window renderer: $backend"
-    return 0
-  fi
-
-  info "No system webview found; adding the Qt renderer (this one is large)"
-  # The [...] patterns below are quoted so the shell treats them as literal
-  # text; unquoted, "[desktop]" is a character class and matches a single char.
-  qt_spec="$SPEC"
-  case "$qt_spec" in
-    "gpd3303s-control[desktop] @ "*) qt_spec="gpd3303s-control[desktop-qt] @ ${qt_spec#*@ }" ;;
-    *"[desktop]")                    qt_spec="${qt_spec%"[desktop]"}[desktop-qt]" ;;
-  esac
-  log "installing Qt renderer from: $qt_spec"
-
-  case "$METHOD" in
-    uv-tool) UV_TOOL_BIN_DIR="$BIN_DIR" uv tool install --force "$qt_spec" || true ;;
-    pipx)    PIPX_BIN_DIR="$BIN_DIR" pipx install --force "$qt_spec" || true ;;
-    venv)    "$VENV_DIR/bin/python" -m pip install --quiet --upgrade "$qt_spec" || true ;;
-  esac
-
-  backend=$("$LAUNCHER" --gui-backend 2>/dev/null || true)
-  if [ -n "$backend" ] && [ "$backend" != "none" ]; then
-    info "Desktop window renderer: $backend"
-  else
-    warn "No desktop renderer available; 'gpd3303s' will open in your browser."
-    printf '       On Debian/Ubuntu:  sudo apt install gir1.2-webkit2-4.1 python3-gi\n'
-    printf '       On Fedora:         sudo dnf install webkit2gtk4.1 python3-gobject\n\n'
-  fi
-}
-
-ensure_gui_backend
 install_desktop_entry
 
 # ---------------------------------------------------------------------------

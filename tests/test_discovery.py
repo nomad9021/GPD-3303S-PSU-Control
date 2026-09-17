@@ -3,12 +3,9 @@
 from unittest import mock
 
 import pytest
-from fastapi.testclient import TestClient
 
 from gpd3303s import protocol
-from gpd3303s.config import Settings
 from gpd3303s.device import PowerSupply, SIMULATOR_PORT, _looks_like_an_adapter, discover
-from gpd3303s.server import create_app
 
 
 @pytest.mark.parametrize(
@@ -119,30 +116,3 @@ def test_autoconnect_reports_nothing_found():
     supply = PowerSupply(poll_interval=5)
     with mock.patch("gpd3303s.device.discover", return_value=None):
         assert supply.autoconnect() is None
-
-
-@pytest.fixture
-def client(tmp_path):
-    with TestClient(create_app(Settings(tmp_path / "s.json"))) as test_client:
-        yield test_client
-
-
-def test_detect_endpoint_connects_to_what_it_finds(client):
-    found = {"port": SIMULATOR_PORT, "baud_rate": 9600, "identity": "GW Instek,GPD-3303S"}
-    with mock.patch("gpd3303s.device.discover", return_value=found):
-        payload = client.post("/api/detect").json()
-
-    assert payload["ok"] is True
-    assert payload["telemetry"]["connected"] is True
-    assert client.get("/api/settings").json()["baud_rate"] == 9600
-
-
-def test_detect_endpoint_404s_when_nothing_is_attached(client):
-    with mock.patch("gpd3303s.device.discover", return_value=None):
-        response = client.post("/api/detect")
-    assert response.status_code == 404
-    assert "No GPD supply found" in response.json()["error"]
-
-
-def test_info_advertises_the_factory_baud_rate(client):
-    assert client.get("/api/info").json()["default_baud"] == protocol.DEFAULT_BAUD_RATE
