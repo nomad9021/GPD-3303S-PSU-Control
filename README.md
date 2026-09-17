@@ -42,6 +42,20 @@ gpd3303s
 On Linux the installer also adds **GPD Control** to your applications menu, so
 you can launch it like any other program.
 
+### Installing from the release files instead
+
+Every release also attaches a wheel and a source archive, if you would rather
+install them yourself from the
+[releases page](https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/latest):
+
+```sh
+pip install "gpd3303s_control-1.0.0-py3-none-any.whl[desktop]"
+```
+
+This is the same package the installer fetches. Doing it by hand skips the parts
+the installer handles for you: the isolated environment, the PATH launcher, the
+Linux menu entry, and the fallback webview renderer when your system has none.
+
 ### It is an application, not a web page
 
 The window is a real OS application window — its own taskbar entry and icon, no
