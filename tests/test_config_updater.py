@@ -27,14 +27,14 @@ def test_unknown_keys_are_not_stored(tmp_path):
 
 def test_corrupt_settings_fall_back_to_defaults(tmp_path):
     path = tmp_path / "s.json"
-    path.write_text("{ this is not json")
+    path.write_text("{ this is not json", encoding="utf-8")
     assert Settings(path).get("theme") == DEFAULTS["theme"]
 
 
 def test_new_defaults_appear_after_an_upgrade(tmp_path):
     # A file written by an older version lacks the newer keys.
     path = tmp_path / "s.json"
-    path.write_text(json.dumps({"theme": "dark"}))
+    path.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
     settings = Settings(path)
     assert settings.get("theme") == "dark"
     assert settings.get("chart_window_s") == DEFAULTS["chart_window_s"]

@@ -292,7 +292,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 161 tests, no hardware needed
+uv run pytest                    # 192 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 

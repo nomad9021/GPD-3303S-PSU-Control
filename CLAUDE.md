@@ -121,6 +121,19 @@ manual settles and that are easy to get wrong:
 - Stick to ASCII plus well-supported glyphs in widget text; some glyphs render
   as boxes under the bundled Qt fonts.
 
+## Read and write text with an explicit encoding
+
+`open(path)`, `read_text()` and `write_text(data)` use the locale's encoding,
+which is **cp1252 on Windows**. Every file here has em dashes in it, so a bare
+read passes on Linux and macOS and dies on Windows with `UnicodeDecodeError:
+'charmap' codec can't decode byte 0x8f`. That broke all three Windows jobs once
+while every Linux job stayed green.
+
+Always pass `encoding="utf-8"`. `tests/test_text_encoding.py` walks `src/` and
+`tests/` with an AST check and fails on any text call that doesn't. Note that
+`read_text(encoding)` takes it first but `write_text(data, encoding)` takes it
+second.
+
 ## Releasing
 
 Tag `vX.Y.Z` must match `__version__`; the workflow refuses otherwise. Push the

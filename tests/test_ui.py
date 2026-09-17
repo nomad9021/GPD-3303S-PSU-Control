@@ -6,6 +6,7 @@ painting without a display.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,8 @@ from gpd3303s.ui.channel import ChannelPanel, Readout  # noqa: E402
 from gpd3303s.ui.chart import StripChart, _nice_step  # noqa: E402
 from gpd3303s.ui.app import MainWindow  # noqa: E402
 from gpd3303s.updater import UpdateInfo  # noqa: E402
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")
@@ -56,9 +59,7 @@ class TestNoWebAnywhere:
                 __import__(f"gpd3303s.{name}")
 
     def test_no_web_dependencies_are_declared(self):
-        from pathlib import Path
-
-        pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+        pyproject = (PROJECT_ROOT / "pyproject.toml").read_text("utf-8")
         for banned in ("fastapi", "uvicorn", "pywebview", "starlette"):
             assert banned not in pyproject.lower(), f"{banned} is back in pyproject"
 
@@ -71,13 +72,16 @@ class TestNoWebAnywhere:
         for banned in ("--web", "--no-browser", "--port", "--host"):
             assert banned not in options, f"{banned} is back on the CLI"
 
-    def test_nothing_listens_on_a_socket(self, window):
-        """A local HTTP server was how the old UI worked; there must be none."""
-        import gpd3303s.ui.app as app_module
+    def test_nothing_listens_on_a_socket(self):
+        """A local HTTP server was how the old UI worked; there must be none.
 
-        source = open(app_module.__file__).read()
-        for banned in ("uvicorn", "http://", "localhost", "127.0.0.1"):
-            assert banned not in source
+        Read with an explicit encoding: the default is cp1252 on Windows, which
+        chokes on the em dashes in these files.
+        """
+        for module in sorted((PROJECT_ROOT / "src" / "gpd3303s").rglob("*.py")):
+            source = module.read_text("utf-8")
+            for banned in ("uvicorn", "fastapi", "pywebview", "http://", "localhost", "127.0.0.1"):
+                assert banned not in source, f"{banned} is back in {module.name}"
 
 
 class TestTheme:

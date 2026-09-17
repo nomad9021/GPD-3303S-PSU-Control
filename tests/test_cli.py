@@ -9,6 +9,7 @@ with `ImportError: libEGL.so.1`, which is how this was found in CI.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,12 +37,15 @@ raise SystemExit(main())
 
 
 def run_without_qt(*flags: str) -> subprocess.CompletedProcess:
+    # Inherit the environment rather than building one: Windows needs SYSTEMROOT
+    # and its own PATH to start a Python process at all.
+    env = dict(os.environ, PYTHONPATH=SRC)
     return subprocess.run(
         [sys.executable, "-c", BLOCK_QT.format(argv=list(flags))],
         capture_output=True,
         text=True,
         timeout=120,
-        env={"PYTHONPATH": SRC, "PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+        env=env,
     )
 
 
