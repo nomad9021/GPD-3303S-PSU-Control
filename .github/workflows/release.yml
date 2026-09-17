@@ -46,23 +46,65 @@ jobs:
         run: python -m build
 
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          generate_release_notes: true
-          files: dist/*
-          body: |
-            ## Install
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
 
-            **Linux / macOS**
-            ```sh
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
-            ```
+          cat > release-notes.md <<NOTES
+          ## Install
 
-            **Windows (PowerShell)**
-            ```powershell
-            irm https://raw.githubusercontent.com/${{ github.repository }}/main/install.ps1 | iex
-            ```
+          **Linux / macOS**
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh
+          \`\`\`
 
-            Already installed? The app will offer this update on its own, or run
-            `gpd3303s --update`.
+          **Windows (PowerShell)**
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
+          \`\`\`
+
+          Already installed? The app will offer this update on its own, or run
+          \`gpd3303s --update\`.
+          NOTES
+
+          # Uploaded with gh, which sends assets one at a time.
+          # softprops/action-gh-release uploads them concurrently and its shared
+          # asset temp dir races whenever more than one file matches, which is
+          # what left v1.0.0 a draft carrying only the sdist.
+          #
+          # Written to be idempotent so a re-run repairs a half-published
+          # release rather than failing on it.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; updating it"
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md --draft=false
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --notes-file release-notes.md
+          fi
+
+      - name: Verify the release is complete
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # The previous failure still produced a release, just an incomplete
+          # one, so success is asserted rather than assumed.
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)
+          echo "Attached assets:"
+          echo "$assets" | sed 's/^/  /'
+
+          echo "$assets" | grep -q '\.whl$' || {
+            echo "::error::release $TAG has no wheel attached"; exit 1; }
+          echo "$assets" | grep -q '\.tar\.gz$' || {
+            echo "::error::release $TAG has no sdist attached"; exit 1; }
+
+          if [ "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" != "false" ]; then
+            echo "::error::release $TAG is still a draft"; exit 1
+          fi
+
+          echo "Release $TAG is published with both artifacts."
