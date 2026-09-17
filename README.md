@@ -292,7 +292,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 152 tests, no hardware needed
+uv run pytest                    # 161 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 
@@ -353,6 +353,10 @@ often don't:
 sudo apt install libegl1 libxkbcommon-x11-0 libdbus-1-3     # Debian / Ubuntu
 sudo dnf install libglvnd-egl libxkbcommon-x11 dbus-libs    # Fedora
 ```
+
+The terminal commands don't need any of that: `--detect`, `--list-ports`,
+`--where` and the rest work on a machine that cannot open a window at all, so
+you can still check the link from a shell.
 
 **The front panel is locked after using the app.** The instrument stays in
 remote mode until it is told otherwise. The app sends `LOCAL` when it

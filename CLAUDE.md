@@ -45,6 +45,7 @@ test count quoted under Development is part of that.
 | `src/gpd3303s/sequencer.py` | Timed setpoint sequences |
 | `src/gpd3303s/recorder.py` | CSV logging |
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
+| `src/gpd3303s/assets.py` | Where the packaged icon lives. No Qt import, ever. |
 | `src/gpd3303s/cli.py` | Argument parsing; builds the app and runs the Qt loop |
 | `src/gpd3303s/ui/app.py` | `MainWindow`: app bar, sidebar, instrument panel, status bar |
 | `src/gpd3303s/ui/views.py` | Monitor, Sequencer, Memory, Protection, Console |
@@ -56,8 +57,16 @@ test count quoted under Development is part of that.
 
 The dependency arrow points one way: `ui/` imports the instrument layer, never
 the reverse. Anything under `ui/` is the only place PySide6 may be imported, and
-`cli.py` imports it late so `--detect`, `--list-ports` and friends still work if
-Qt is missing.
+`cli.py` imports `ui/` late, inside `run_app`, so every other flag works on a
+machine that cannot load Qt at all.
+
+That last part is load-bearing, not tidiness. `--icon-path` once imported
+`ui/app.py` to find the icon, and on a box without Qt's system libraries it
+died with `ImportError: libEGL.so.1` — which is exactly the box the installer
+runs on when it asks a fresh installation where its icon is. `assets.py` exists
+so that lookup needs no Qt, and `tests/test_cli.py` runs the CLI with every
+PySide6 import refused to keep it that way. Anything a non-GUI flag needs
+belongs outside `ui/`.
 
 ## Commands
 

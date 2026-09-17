@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
+from ..assets import icon_path
 from ..config import Settings
 from ..device import (
     DeviceError,
@@ -55,14 +55,6 @@ from .views import ConsoleView, MemoryView, MonitorView, ProtectionView, Sequenc
 log = logging.getLogger(__name__)
 
 SECTIONS = ["Monitor", "Sequencer", "Memory", "Protection", "Console"]
-
-
-def icon_path() -> Optional[Path]:
-    for name in ("icon.png", "icon.svg"):
-        candidate = Path(__file__).resolve().parent.parent / "resources" / name
-        if candidate.exists():
-            return candidate
-    return None
 
 
 class MainWindow(QMainWindow):

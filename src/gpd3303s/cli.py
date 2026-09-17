@@ -11,6 +11,7 @@ import sys
 from typing import Optional
 
 from . import __version__
+from .assets import icon_path
 from .config import Settings, config_dir, data_dir
 from .device import SIMULATOR_PORT, PowerSupply, available_ports, discover
 
@@ -70,8 +71,6 @@ def main(argv: Optional[list] = None) -> int:
         return 1
 
     if args.icon_path:
-        from .ui.app import icon_path
-
         icon = icon_path()
         if icon is None:
             return 1
@@ -121,7 +120,7 @@ def run_app(args) -> int:
         )
         return 1
 
-    from .ui.app import MainWindow, icon_path
+    from .ui.app import MainWindow
     from .ui.theme import apply as apply_theme, resolve as resolve_theme
 
     settings = Settings()

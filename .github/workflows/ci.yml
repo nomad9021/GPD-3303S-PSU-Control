@@ -127,6 +127,24 @@ jobs:
           "${{ runner.temp }}/bin/gpd3303s" --version
           "${{ runner.temp }}/bin/gpd3303s" --list-ports
 
+      # This job deliberately installs no Qt system libraries, so it is also
+      # the guard that none of the flags above reach for PySide6: --icon-path
+      # once did, and died with ImportError: libEGL.so.1 right here.
+      - name: The desktop entry and its icons are installed
+        if: runner.os == 'Linux'
+        run: |
+          share="${XDG_DATA_HOME:-$HOME/.local/share}"
+          entry="$share/applications/gpd3303s-control.desktop"
+          icons="$share/icons/hicolor"
+          test -f "$entry" || { echo "no desktop entry at $entry"; exit 1; }
+          grep -q '^Exec=.*gpd3303s$' "$entry" || { echo "Exec line is wrong"; exit 1; }
+          grep -q '^Icon=gpd3303s-control$' "$entry" || { echo "Icon line is wrong"; exit 1; }
+          test -x "$(sed -n 's/^Exec=//p' "$entry")" || { echo "Exec is not executable"; exit 1; }
+          test -f "$icons/512x512/apps/gpd3303s-control.png" || { echo "no raster icon"; exit 1; }
+          test -f "$icons/scalable/apps/gpd3303s-control.svg" || { echo "no scalable icon"; exit 1; }
+          echo "desktop entry and both icons installed:"
+          sed 's/^/  /' "$entry"
+
   installer-windows:
     name: Installer smoke test (windows-latest)
     runs-on: windows-latest
