@@ -29,24 +29,22 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libxkbcommon-x11-0 libdbus-1-3
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Desktop backend probe works without a renderer installed
-        run: |
-          # Headless runners have no webview, so this must report "none"
-          # and exit 1 rather than raising.
-          set +e
-          backend=$(python -m gpd3303s --gui-backend)
-          code=$?
-          set -e
-          echo "backend=$backend exit=$code"
-          test "$backend" = "none" && test "$code" -eq 1
-        shell: bash
-
       - name: Run tests
+        env:
+          # Qt needs a platform plugin; offscreen renders real widgets with no
+          # display, so the interface is covered on headless runners.
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q
 
   build:
@@ -64,22 +62,28 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
-      - name: Check the wheel ships the UI
+      - name: Check the wheel ships the UI and its icon
         run: |
           python - <<'PY'
           import glob, zipfile, sys
           wheel = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(wheel).namelist()
           required = [
-              "gpd3303s/web/index.html",
-              "gpd3303s/web/app.js",
-              "gpd3303s/web/chart.js",
-              "gpd3303s/web/style.css",
+              "gpd3303s/ui/app.py",
+              "gpd3303s/ui/chart.py",
+              "gpd3303s/ui/channel.py",
+              "gpd3303s/ui/views.py",
+              "gpd3303s/ui/theme.py",
+              "gpd3303s/resources/icon.png",
+              "gpd3303s/resources/icon.svg",
           ]
           missing = [name for name in required if name not in names]
           if missing:
               sys.exit(f"wheel is missing: {missing}")
-          print(f"{wheel} contains the full UI")
+          banned = [n for n in names if "/web/" in n or n.endswith((".html", ".js", ".css"))]
+          if banned:
+              sys.exit(f"wheel still carries web assets: {banned}")
+          print(f"{wheel} ships the native UI, no web assets")
           PY
 
       - uses: actions/upload-artifact@v4
@@ -114,6 +118,7 @@ jobs:
       - name: Launcher works
         run: |
           "${{ runner.temp }}/bin/gpd3303s" --detect || true
+          "${{ runner.temp }}/bin/gpd3303s" --icon-path
           # Which branch of the installer ran (uv, pipx or venv) decides where
           # the launcher lands, so record it alongside the result.
           echo "install method: $(cat "${HOME}/.local/share/gpd3303s-control/install-method" 2>/dev/null \
@@ -121,6 +126,24 @@ jobs:
             || echo unknown)"
           "${{ runner.temp }}/bin/gpd3303s" --version
           "${{ runner.temp }}/bin/gpd3303s" --list-ports
+
+      # This job deliberately installs no Qt system libraries, so it is also
+      # the guard that none of the flags above reach for PySide6: --icon-path
+      # once did, and died with ImportError: libEGL.so.1 right here.
+      - name: The desktop entry and its icons are installed
+        if: runner.os == 'Linux'
+        run: |
+          share="${XDG_DATA_HOME:-$HOME/.local/share}"
+          entry="$share/applications/gpd3303s-control.desktop"
+          icons="$share/icons/hicolor"
+          test -f "$entry" || { echo "no desktop entry at $entry"; exit 1; }
+          grep -q '^Exec=.*gpd3303s$' "$entry" || { echo "Exec line is wrong"; exit 1; }
+          grep -q '^Icon=gpd3303s-control$' "$entry" || { echo "Icon line is wrong"; exit 1; }
+          test -x "$(sed -n 's/^Exec=//p' "$entry")" || { echo "Exec is not executable"; exit 1; }
+          test -f "$icons/512x512/apps/gpd3303s-control.png" || { echo "no raster icon"; exit 1; }
+          test -f "$icons/scalable/apps/gpd3303s-control.svg" || { echo "no scalable icon"; exit 1; }
+          echo "desktop entry and both icons installed:"
+          sed 's/^/  /' "$entry"
 
   installer-windows:
     name: Installer smoke test (windows-latest)
