@@ -42,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="upgrade to the latest release and exit (needs a network)")
     parser.add_argument("--icon-path", action="store_true",
                         help="print the path to the application icon and exit")
+    parser.add_argument("--doctor", action="store_true",
+                        help="report which build is installed and where, then exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     return parser
 
@@ -76,6 +78,11 @@ def main(argv: Optional[list] = None) -> int:
             return 1
         print(icon)
         return 0
+
+    if args.doctor:
+        from .doctor import run as run_doctor
+
+        return run_doctor()
 
     if args.where:
         print(f"config: {config_dir() / 'settings.json'}")

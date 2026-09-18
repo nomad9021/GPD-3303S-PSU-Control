@@ -106,6 +106,7 @@ class ChannelPanel(QFrame):
 
     voltage_requested = Signal(int, float)
     current_requested = Signal(int, float)
+    enable_requested = Signal(int, bool)
 
     def __init__(self, index: int, label: str, max_v: float, max_a: float, theme: Theme):
         super().__init__()
@@ -135,8 +136,18 @@ class ChannelPanel(QFrame):
         self.name = QLabel(self.label_text)
         self.badge = ModeBadge(self.theme)
         self.rating = QLabel(f"{self.max_v:g} V · {self.max_a:g} A")
+        self.enable_button = QPushButton("On")
+        self.enable_button.setCheckable(True)
+        self.enable_button.setChecked(True)
+        self.enable_button.setFixedSize(46, 22)
+        self.enable_button.setToolTip(
+            "Park this channel at 0 V without touching the other one.\n"
+            "Its setpoint is remembered and restored when you switch it back on."
+        )
+        self.enable_button.clicked.connect(self._enable_clicked)
         header.addWidget(self.swatch)
         header.addWidget(self.name)
+        header.addWidget(self.enable_button)
         header.addWidget(self.badge)
         header.addStretch(1)
         header.addWidget(self.rating)
@@ -176,6 +187,15 @@ class ChannelPanel(QFrame):
             self.quick_buttons.append(button)
         quick.addStretch(1)
         outer.addLayout(quick)
+
+        self.totals = QLabel()
+        self.totals.setObjectName("ChannelTotals")
+        self.totals.setToolTip(
+            "Charge and energy drawn since the counters were last reset,\n"
+            "with the range each measurement has covered."
+        )
+        outer.addWidget(self.totals)
+        self._set_totals({})
 
     def _setpoint_row(self, grid: QGridLayout, row: int, label: str, unit: str,
                       maximum: float, step: float, decimals: int):
@@ -236,16 +256,54 @@ class ChannelPanel(QFrame):
 
     # -- updates ------------------------------------------------------------ #
 
+    def _enable_clicked(self) -> None:
+        self.enable_requested.emit(self.index, self.enable_button.isChecked())
+
     def set_enabled(self, enabled: bool) -> None:
         for widget in (self.v_spin, self.v_slider, self.a_spin, self.a_slider,
-                       *self.quick_buttons):
+                       self.enable_button, *self.quick_buttons):
             widget.setEnabled(enabled)
 
+    @staticmethod
+    def _format_charge(amp_hours: float) -> str:
+        # Bench loads sit in the milliamp-hour range far more often than amps.
+        if abs(amp_hours) < 1.0:
+            return f"{amp_hours * 1000:.1f} mAh"
+        return f"{amp_hours:.3f} Ah"
+
+    @staticmethod
+    def _format_energy(watt_hours: float) -> str:
+        if abs(watt_hours) < 1.0:
+            return f"{watt_hours * 1000:.1f} mWh"
+        return f"{watt_hours:.3f} Wh"
+
+    def _set_totals(self, reading: dict) -> None:
+        charge = self._format_charge(reading.get("amp_hours") or 0.0)
+        energy = self._format_energy(reading.get("watt_hours") or 0.0)
+        parts = [charge, energy]
+        v_max, i_max = reading.get("voltage_max"), reading.get("current_max")
+        if v_max is not None and i_max is not None:
+            v_min = reading.get("voltage_min") or 0.0
+            i_min = reading.get("current_min") or 0.0
+            parts.append(f"V {v_min:.2f}–{v_max:.2f}")
+            parts.append(f"A {i_min:.3f}–{i_max:.3f}")
+        self.totals.setText("  ·  ".join(parts))
+
     def apply_reading(self, reading: dict, output_on: bool) -> None:
-        self.volts.set_value(reading["voltage"], dim=not output_on)
-        self.amps.set_value(reading["current"], dim=not output_on)
-        self.watts.set_value(reading["power"], dim=not output_on)
-        self.badge.set_mode(ChannelMode(reading["mode"]) if output_on else None)
+        parked = not reading.get("enabled", True)
+        live = output_on and not parked
+        self.volts.set_value(reading["voltage"], dim=not live)
+        self.amps.set_value(reading["current"], dim=not live)
+        self.watts.set_value(reading["power"], dim=not live)
+        self.badge.set_mode(ChannelMode(reading["mode"]) if live else None)
+        self._set_totals(reading)
+
+        if self.enable_button.isChecked() == parked:
+            self.enable_button.blockSignals(True)
+            self.enable_button.setChecked(not parked)
+            self.enable_button.blockSignals(False)
+        self.enable_button.setText("On" if not parked else "Off")
+        self._restyle_enable()
 
         if self._editing or self.v_spin.hasFocus() or self.a_spin.hasFocus():
             return
@@ -266,6 +324,8 @@ class ChannelPanel(QFrame):
         self.swatch.setStyleSheet(f"background: {colour}; border-radius: 2px;")
         self.name.setStyleSheet(f"color: {theme.text}; font-size: 15px; font-weight: 700;")
         self.rating.setStyleSheet(f"color: {theme.text_muted}; font-size: 10px;")
+        self.totals.setStyleSheet(f"color: {theme.text_muted}; font-size: 10px;")
+        self._restyle_enable()
         self.setStyleSheet(
             f"ChannelPanel {{ background: {theme.base};"
             f" border: 1px solid {theme.border}; border-radius: 7px;"
@@ -276,3 +336,12 @@ class ChannelPanel(QFrame):
         for widget in (self.volts, self.amps, self.watts):
             widget.set_theme(theme)
         self.badge.set_theme(theme)
+
+    def _restyle_enable(self) -> None:
+        """Colour the switch by state: a parked channel has to be obvious."""
+        on = self.enable_button.isChecked()
+        colour = self.theme.good if on else self.theme.text_muted
+        self.enable_button.setStyleSheet(
+            f"QPushButton {{ color: {colour}; border: 1px solid {colour};"
+            f" border-radius: 11px; font-size: 10px; font-weight: 700; }}"
+        )

@@ -202,6 +202,44 @@ fi
 LAUNCHER="$BIN_DIR/gpd3303s"
 [ -x "$LAUNCHER" ] || die "installed, but no launcher was created at $LAUNCHER"
 
+# ---------------------------------------------------------------------------
+# Installing it is not the same as running it. An older copy earlier on PATH
+# keeps winning silently -- a `pip install` as root leaves one in
+# /usr/local/bin, which precedes ~/.local/bin nearly everywhere. Reporting
+# success while the user still launches the old build is the worst outcome, so
+# check and say so.
+# ---------------------------------------------------------------------------
+same_file() {
+  # Resolve both sides where we can, so a symlink to our own launcher is not
+  # mistaken for a rival install.
+  a="$1"; b="$2"
+  [ "$a" = "$b" ] && return 0
+  if have readlink; then
+    ra=$(readlink -f "$a" 2>/dev/null || printf '%s' "$a")
+    rb=$(readlink -f "$b" 2>/dev/null || printf '%s' "$b")
+    [ "$ra" = "$rb" ] && return 0
+  fi
+  return 1
+}
+
+check_shadowing() {
+  resolved=$(command -v gpd3303s 2>/dev/null || true)
+  [ -n "$resolved" ] || return 0            # not on PATH at all; check_path says so
+  same_file "$resolved" "$LAUNCHER" && return 0
+
+  printf '\n%serror%s Another gpd3303s is shadowing the one just installed.\n\n' "$RED" "$RESET" >&2
+  printf '       just installed:  %s\n' "$LAUNCHER" >&2
+  printf '       but PATH finds:  %s   <- this is what runs\n\n' "$resolved" >&2
+  printf '       That older copy is probably a leftover `pip install`. Remove it:\n\n' >&2
+  printf '         rm %s\n\n' "$resolved" >&2
+  printf '       (use sudo if it lives outside your home directory), then run:\n\n' >&2
+  printf '         gpd3303s --doctor\n\n' >&2
+  SHADOWED=1
+}
+
+SHADOWED=0
+check_shadowing
+
 install_desktop_entry
 
 # ---------------------------------------------------------------------------
@@ -216,5 +254,16 @@ fi
 
 check_path
 
-printf '\n%sInstalled.%s Start it with:\n\n    %sgpd3303s%s\n\n' "$GREEN" "$RESET" "$BOLD" "$RESET"
+VERSION=$("$LAUNCHER" --version 2>/dev/null || printf 'gpd3303s-control')
+
+if [ "$SHADOWED" = "1" ]; then
+  printf '\n%sInstalled %s to %s, but it is not what runs.%s\n' \
+    "$YELLOW" "$VERSION" "$LAUNCHER" "$RESET"
+  printf 'Remove the shadowing copy named above, then check with:\n\n    gpd3303s --doctor\n\n'
+  exit 1
+fi
+
+printf '\n%sInstalled %s.%s Start it with:\n\n    %sgpd3303s%s\n\n' \
+  "$GREEN" "$VERSION" "$RESET" "$BOLD" "$RESET"
 printf 'No hardware handy? Try the built-in simulator:\n\n    gpd3303s --simulate\n\n'
+printf 'Something looks wrong? This prints exactly what is installed and where:\n\n    gpd3303s --doctor\n\n'

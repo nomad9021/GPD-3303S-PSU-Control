@@ -156,8 +156,40 @@ if (-not $launcher) {
     throw "Installed, but no launcher was created in $BinDir."
 }
 
+# Installing it is not the same as running it: an older copy earlier on PATH
+# keeps winning silently. Say so rather than reporting success.
+$shadowed = $false
+$onPath = Get-Command gpd3303s -ErrorAction SilentlyContinue
+if ($onPath -and $onPath.Source -and $onPath.Source -ne $launcher.FullName) {
+    $shadowed = $true
+    Write-Host ''
+    Write-Host 'error' -ForegroundColor Red -NoNewline
+    Write-Host ' Another gpd3303s is shadowing the one just installed.'
+    Write-Host ''
+    Write-Host "       just installed:  $($launcher.FullName)"
+    Write-Host "       but PATH finds:  $($onPath.Source)   <- this is what runs"
+    Write-Host ''
+    Write-Host '       That older copy is probably a leftover pip install. Remove it, then run:'
+    Write-Host ''
+    Write-Host '         gpd3303s --doctor'
+    Write-Host ''
+}
+
+$installedVersion = & $launcher.FullName --version 2>$null
+if (-not $installedVersion) { $installedVersion = 'gpd3303s-control' }
+
+if ($shadowed) {
+    Write-Host ''
+    Write-Host "Installed $installedVersion, but it is not what runs." -ForegroundColor Yellow
+    Write-Host 'Remove the shadowing copy named above, then check with:'
+    Write-Host ''
+    Write-Host '    gpd3303s --doctor'
+    Write-Host ''
+    exit 1
+}
+
 Write-Host ''
-Write-Host 'Installed.' -ForegroundColor Green -NoNewline
+Write-Host "Installed $installedVersion." -ForegroundColor Green -NoNewline
 Write-Host ' Start it with:'
 Write-Host ''
 Write-Host '    gpd3303s' -ForegroundColor White
@@ -165,6 +197,10 @@ Write-Host ''
 Write-Host 'No hardware handy? Try the built-in simulator:'
 Write-Host ''
 Write-Host '    gpd3303s --simulate'
+Write-Host ''
+Write-Host 'Something looks wrong? This prints exactly what is installed and where:'
+Write-Host ''
+Write-Host '    gpd3303s --doctor'
 Write-Host ''
 Write-Host ''
 Write-Host 'On Windows the supply appears as a COM port once the GW Instek USB driver is installed.'

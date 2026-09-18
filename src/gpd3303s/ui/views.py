@@ -44,6 +44,7 @@ class MonitorView(QWidget):
     window_changed = Signal(float)
     poll_changed = Signal(float)
     record_toggled = Signal()
+    reset_requested = Signal()
     clear_requested = Signal()
 
     def __init__(self, theme: Theme):
@@ -83,6 +84,9 @@ class MonitorView(QWidget):
             lambda: self.poll_changed.emit(float(self.poll_box.currentData()))
         )
 
+        reset = QPushButton("Reset totals")
+        reset.setToolTip("Zero the mAh / mWh counters and the min-max marks")
+        reset.clicked.connect(self.reset_requested.emit)
         clear = QPushButton("Clear")
         clear.clicked.connect(self.clear_requested.emit)
 
@@ -93,6 +97,7 @@ class MonitorView(QWidget):
         bar.addWidget(self.window_box)
         bar.addWidget(QLabel("Poll"))
         bar.addWidget(self.poll_box)
+        bar.addWidget(reset)
         bar.addWidget(clear)
         layout.addLayout(bar)
 

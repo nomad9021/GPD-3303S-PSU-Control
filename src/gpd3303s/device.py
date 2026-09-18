@@ -19,6 +19,10 @@ log = logging.getLogger(__name__)
 
 SIMULATOR_PORT = "SIMULATOR"
 
+#: A gap longer than this is treated as a stall, not as load, so a suspended
+#: laptop or a stalled link cannot invent amp-hours that never flowed.
+MAX_INTEGRATION_GAP_S = 5.0
+
 
 class DeviceError(RuntimeError):
     """Raised for anything the caller should surface in the UI."""
@@ -32,12 +36,51 @@ class ChannelReading:
     voltage_set: float = 0.0
     current_set: float = 0.0
     mode: ChannelMode = ChannelMode.CV
+    #: False while the channel is parked at 0 V / 0 A. The instrument has one
+    #: output switch for both channels, so "off" for a single channel means
+    #: parked, and :attr:`voltage_set` keeps showing the value it will return to.
+    enabled: bool = True
+    # Running totals since the last reset, integrated on every poll.
+    amp_hours: float = 0.0
+    watt_hours: float = 0.0
+    voltage_min: Optional[float] = None
+    voltage_max: Optional[float] = None
+    current_min: Optional[float] = None
+    current_max: Optional[float] = None
+    power_max: Optional[float] = None
 
     @property
     def power(self) -> float:
         return self.voltage * self.current
 
+    def accumulate(self, dt: float) -> None:
+        """Fold one sample, ``dt`` seconds after the previous one, into the totals.
+
+        Rectangular integration is plenty here: the poll interval is a fraction
+        of a second and the quantity of interest — how much charge a load has
+        drawn — changes far more slowly than that.
+        """
+        if dt > 0:
+            hours = dt / 3600.0
+            self.amp_hours += self.current * hours
+            self.watt_hours += self.power * hours
+        self.voltage_min = self.voltage if self.voltage_min is None else min(self.voltage_min, self.voltage)
+        self.voltage_max = self.voltage if self.voltage_max is None else max(self.voltage_max, self.voltage)
+        self.current_min = self.current if self.current_min is None else min(self.current_min, self.current)
+        self.current_max = self.current if self.current_max is None else max(self.current_max, self.current)
+        self.power_max = self.power if self.power_max is None else max(self.power_max, self.power)
+
+    def reset_statistics(self) -> None:
+        self.amp_hours = 0.0
+        self.watt_hours = 0.0
+        self.voltage_min = self.voltage_max = None
+        self.current_min = self.current_max = None
+        self.power_max = None
+
     def to_dict(self) -> dict:
+        def opt(value: Optional[float]) -> Optional[float]:
+            return None if value is None else round(value, 4)
+
         return {
             "channel": self.channel,
             "voltage": round(self.voltage, 4),
@@ -46,6 +89,14 @@ class ChannelReading:
             "voltage_set": round(self.voltage_set, 3),
             "current_set": round(self.current_set, 3),
             "mode": self.mode.value,
+            "enabled": self.enabled,
+            "amp_hours": round(self.amp_hours, 6),
+            "watt_hours": round(self.watt_hours, 6),
+            "voltage_min": opt(self.voltage_min),
+            "voltage_max": opt(self.voltage_max),
+            "current_min": opt(self.current_min),
+            "current_max": opt(self.current_max),
+            "power_max": opt(self.power_max),
         }
 
 
@@ -229,6 +280,11 @@ class PowerSupply:
         self.last_trip: Optional[str] = None
         self.last_error: Optional[str] = None
 
+        # Setpoints a parked channel returns to, keyed by channel number.
+        self._parked: Dict[int, Dict[str, float]] = {}
+        self._last_sample: Optional[float] = None
+        self.stats_started: float = time.time()
+
         self._listeners: List[Callable[[Telemetry], None]] = []
 
     # -- lifecycle ---------------------------------------------------------- #
@@ -294,6 +350,11 @@ class PowerSupply:
                 # Not fatal: a few units need a second attempt after power-up.
                 self.identity = self._query(protocol.cmd_identify()) or ""
             self.spec = protocol.model_for_identity(self.identity)
+            # A new link is a new session: nothing is parked and the counters
+            # start from zero.
+            self._parked = {}
+            self._last_sample = None
+            self.stats_started = time.time()
             self.readings = {
                 c.index: ChannelReading(channel=c.index) for c in self.spec.programmable_channels
             }
@@ -388,6 +449,13 @@ class PowerSupply:
     def set_voltage(self, channel: int, volts: float) -> None:
         spec = self._channel_spec(channel)
         value = spec.clamp_voltage(volts)
+        # A parked channel stays at 0 V; editing its setpoint changes what it
+        # will come back to, which is what the displayed value has to mean.
+        if channel in self._parked:
+            self._parked[channel]["voltage"] = value
+            if channel in self.readings:
+                self.readings[channel].voltage_set = value
+            return
         self._write(protocol.cmd_set_voltage(channel, value))
         if channel in self.readings:
             self.readings[channel].voltage_set = value
@@ -395,9 +463,58 @@ class PowerSupply:
     def set_current(self, channel: int, amps: float) -> None:
         spec = self._channel_spec(channel)
         value = spec.clamp_current(amps)
+        if channel in self._parked:
+            self._parked[channel]["current"] = value
+            if channel in self.readings:
+                self.readings[channel].current_set = value
+            return
         self._write(protocol.cmd_set_current(channel, value))
         if channel in self.readings:
             self.readings[channel].current_set = value
+
+    def set_channel_enabled(self, channel: int, enabled: bool) -> None:
+        """Turn one channel on or off.
+
+        The instrument has a single output switch for both channels and no
+        per-channel command, so "off" here means parked: the channel is driven
+        to 0 V / 0 A and its setpoints are remembered, then written back when it
+        is switched on again. The other channel is untouched throughout.
+        """
+        self._channel_spec(channel)
+        reading = self.readings.get(channel)
+
+        if enabled:
+            parked = self._parked.pop(channel, None)
+            if parked is None:
+                return
+            self._write(protocol.cmd_set_voltage(channel, parked["voltage"]))
+            self._write(protocol.cmd_set_current(channel, parked["current"]))
+            if reading is not None:
+                reading.voltage_set = parked["voltage"]
+                reading.current_set = parked["current"]
+                reading.enabled = True
+            return
+
+        if channel in self._parked:
+            return
+        self._parked[channel] = {
+            "voltage": reading.voltage_set if reading else 0.0,
+            "current": reading.current_set if reading else 0.0,
+        }
+        self._write(protocol.cmd_set_voltage(channel, 0.0))
+        self._write(protocol.cmd_set_current(channel, 0.0))
+        if reading is not None:
+            reading.enabled = False
+
+    def channel_enabled(self, channel: int) -> bool:
+        return channel not in self._parked
+
+    def reset_statistics(self) -> None:
+        """Zero the charge and energy totals and the min/max marks."""
+        for reading in self.readings.values():
+            reading.reset_statistics()
+        self._last_sample = None
+        self.stats_started = time.time()
 
     def set_output(self, enabled: bool) -> None:
         self._write(protocol.cmd_output(enabled))
@@ -448,6 +565,11 @@ class PowerSupply:
 
     def _refresh_setpoints(self) -> None:
         for channel, reading in self.readings.items():
+            if channel in self._parked:
+                # Parked channels really are at 0 V on the instrument. Reading
+                # that back would overwrite the setpoint the panel is promising
+                # to restore, so leave the remembered value alone.
+                continue
             v = protocol.parse_number(self._query(protocol.cmd_get_voltage_setpoint(channel)))
             i = protocol.parse_number(self._query(protocol.cmd_get_current_setpoint(channel)))
             if v is not None:
@@ -500,7 +622,23 @@ class PowerSupply:
                 if channel in self.readings:
                     self.readings[channel].mode = mode
 
+        self._accumulate()
         self._enforce_protection()
+
+    def _accumulate(self) -> None:
+        """Integrate charge and energy across the gap since the previous poll.
+
+        Timed off the wall clock rather than the nominal poll interval, because
+        a slow link, a retry or a paused thread all make the real gap longer
+        than the setting, and a counter that ignores that reads low.
+        """
+        now = time.monotonic()
+        previous, self._last_sample = self._last_sample, now
+        # The first poll after a connect or a reset has no interval behind it,
+        # and a long stall would otherwise land as one huge rectangle.
+        dt = 0.0 if previous is None else min(now - previous, MAX_INTEGRATION_GAP_S)
+        for reading in self.readings.values():
+            reading.accumulate(dt)
 
     def _enforce_protection(self) -> None:
         if not self.status.output:

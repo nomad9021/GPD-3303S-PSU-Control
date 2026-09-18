@@ -302,6 +302,7 @@ class MainWindow(QMainWindow):
         self.monitor.poll_changed.connect(self._set_poll_interval)
         self.monitor.clear_requested.connect(self.monitor.clear)
         self.monitor.record_toggled.connect(self.toggle_recording)
+        self.monitor.reset_requested.connect(self.reset_statistics)
         self.sequencer_view.run_requested.connect(self.run_sequence)
         self.sequencer_view.stop_requested.connect(self.stop_sequence)
         self.memory.save_slot.connect(self.save_memory)
@@ -462,6 +463,7 @@ class MainWindow(QMainWindow):
             )
             panel.voltage_requested.connect(self._set_voltage)
             panel.current_requested.connect(self._set_current)
+            panel.enable_requested.connect(self._set_channel_enabled)
             self.channel_row.addWidget(panel)
             self.channels.append(panel)
 
@@ -509,6 +511,19 @@ class MainWindow(QMainWindow):
         except DeviceError as exc:
             self._warn("Instrument error", str(exc))
             return False
+
+    def _set_channel_enabled(self, channel: int, enabled: bool) -> None:
+        self._guard(self.supply.set_channel_enabled, channel, enabled)
+        self._refresh_from_supply()
+
+    def reset_statistics(self) -> None:
+        self.supply.reset_statistics()
+        self._refresh_from_supply()
+
+    def _refresh_from_supply(self) -> None:
+        """Repaint from the current state without waiting for the next poll."""
+        if self.supply.connected:
+            self._on_telemetry(self.supply.snapshot())
 
     def _set_voltage(self, channel: int, value: float) -> None:
         self._guard(self.supply.set_voltage, channel, value)
@@ -681,9 +696,12 @@ class MainWindow(QMainWindow):
         self.status_output.setStyleSheet(
             f"color: {self.theme.good}; font-weight: 600;" if telemetry.output else ""
         )
+        # A parked channel is not regulating anything, so reporting CV for it
+        # would contradict the panel, which shows no badge at all.
         self.status_modes.setText(
             "  ".join(
-                f"CH{c['channel']} {c['mode'].upper()}" for c in telemetry.channels
+                f"CH{c['channel']} " + (c["mode"].upper() if c.get("enabled", True) else "off")
+                for c in telemetry.channels
             ) if telemetry.output else ""
         )
         self.status_record.setText("● Recording" if self.recorder.active else "")
