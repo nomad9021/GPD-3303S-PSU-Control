@@ -47,6 +47,8 @@ test count quoted under Development is part of that.
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
 | `src/gpd3303s/assets.py` | Where the packaged icon lives. No Qt import, ever. |
 | `src/gpd3303s/doctor.py` | `--doctor`: which build is installed, and what shadows it. No Qt import. |
+| `src/gpd3303s/desktop_entry.py` | The Linux menu entry. No Qt import. |
+| `packaging/` | The single-file standalone Linux build (PyInstaller). |
 | `src/gpd3303s/cli.py` | Argument parsing; builds the app and runs the Qt loop |
 | `src/gpd3303s/ui/app.py` | `MainWindow`: app bar, sidebar, instrument panel, status bar |
 | `src/gpd3303s/ui/views.py` | Monitor, Sequencer, Memory, Protection, Console |
@@ -151,6 +153,32 @@ Consequences worth keeping straight:
   reading that back would erase the remembered value.
 - A connect clears all parking. Never present parking as isolation in the UI or
   the docs — the terminals are still connected.
+
+## A release can be older than the code
+
+The one-liner asked GitHub for the *latest release* and installed that. The
+latest release was v1.0.0, carrying the retired web interface, while the default
+branch was already 1.1.0 with the native app — so every `curl | sh` installed
+the web UI and looked broken, no matter how many times it was run. This was the
+real cause of "I reinstalled and still get the web page"; PATH shadowing was a
+second, smaller problem on top.
+
+`resolve_ref` in `install.sh` now compares the newest release against
+`__version__` on the default branch and takes whichever is newer, so it
+self-heals once a current release exists. `apply_update` refuses any tag that is
+not strictly newer than what is running, so "update" can never walk backwards
+onto an older build. `tests/test_no_downgrade.py` pins both.
+
+When cutting a release, tag the commit that carries the bumped `__version__` —
+the workflow compares them and will refuse a tag placed on an earlier commit.
+
+## The standalone Linux build is the escape hatch
+
+`packaging/build-linux-app.sh` freezes the app into one file with PyInstaller:
+Python, Qt and the code, no pip, no virtualenv, nothing on PATH. When an install
+misbehaves, that is what to reach for, because the thing that runs is the file
+you ran. The release workflow builds it, verifies it reports the tag's version
+and says "native Qt widgets" under `env -i`, and refuses to publish without it.
 
 ## Read and write text with an explicit encoding
 

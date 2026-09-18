@@ -19,6 +19,30 @@ offline, and updates itself. Runs on Windows, macOS and Linux.
 
 ## Install
 
+### Linux: just download it
+
+Grab **GPD-Control-x86_64** from the
+[latest release](https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/latest):
+
+```sh
+chmod +x GPD-Control-x86_64
+./GPD-Control-x86_64
+```
+
+That single file contains Python, Qt and the app. Nothing is installed, nothing
+goes on your `PATH`, and no older copy can shadow it — the thing that runs is the
+file you ran. This is the shortest path to a working app, and the one to reach
+for if an install has ever misbehaved.
+
+To put it in your applications menu, move it somewhere permanent first:
+
+```sh
+mkdir -p ~/.local/bin && mv GPD-Control-x86_64 ~/.local/bin/
+~/.local/bin/GPD-Control-x86_64 --install-desktop-entry
+```
+
+### Or install it from source
+
 **Linux / macOS**
 
 ```sh
@@ -269,6 +293,7 @@ gpd3303s --connect COM3      connect to a specific port at startup
 gpd3303s --no-autoconnect    do not search for an instrument at startup
 gpd3303s --list-ports        print every detected serial port
 gpd3303s --doctor            report which build is installed and where
+gpd3303s --install-desktop-entry   add it to the Linux applications menu
 gpd3303s --where             print config and log locations
 gpd3303s --icon-path         print the path to the application icon
 gpd3303s --check-update      check for a newer release
@@ -335,7 +360,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 234 tests, no hardware needed
+uv run pytest                    # 260 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 
@@ -361,6 +386,9 @@ Layout:
 | `src/gpd3303s/ui/chart.py` | Strip chart, drawn with `QPainter` |
 | `src/gpd3303s/ui/theme.py` | Light and dark palettes and the Qt stylesheet |
 | `src/gpd3303s/ui/bridge.py` | Marshals device callbacks onto the GUI thread as Qt signals |
+| `src/gpd3303s/doctor.py` | `--doctor`: which build is installed, and what shadows it |
+| `src/gpd3303s/desktop_entry.py` | `--install-desktop-entry`: the Linux menu entry |
+| `packaging/build-linux-app.sh` | Builds the single-file standalone Linux app |
 
 The device layer knows nothing about the UI: it pushes telemetry to callbacks,
 and `bridge.py` turns those into Qt signals so the polling thread never touches a
