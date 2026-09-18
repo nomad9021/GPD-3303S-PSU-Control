@@ -44,13 +44,28 @@ gpd3303s
 On Linux the installer also adds **GPD Control** to your applications menu with
 its own icon, so you can launch it from the desktop like any other program.
 
+The installer prints the version it installed and checks that it is the one your
+shell will actually run. If an older copy is earlier on your `PATH`, it says so
+and exits non-zero rather than reporting success — see
+[I installed it but I'm still getting the old version](#i-installed-it-but-im-still-getting-the-old-version).
+
+### Checking what you have
+
+```sh
+gpd3303s --doctor
+```
+
+Prints the version, where it is installed, whether Qt can load, and **every**
+`gpd3303s` on your `PATH` with the one your shell picks marked. It needs no
+window and no hardware, so it works even when the app won't start.
+
 ### Installing from the release files instead
 
 Every release also attaches a wheel and a source archive. To install one by hand
 from the [releases page](https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/latest):
 
 ```sh
-pip install "https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/download/v1.0.0/gpd3303s_control-1.0.0-py3-none-any.whl"
+pip install "https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/download/v1.1.0/gpd3303s_control-1.1.0-py3-none-any.whl"
 ```
 
 There are no optional extras to choose — everything the app needs is a plain
@@ -129,6 +144,33 @@ Setpoints are clamped to the channel's rating before they're sent, and the
 display never fights you: a field you are editing is left alone until you commit
 it with <kbd>Enter</kbd> or by clicking away. Sliders send on release rather than
 on every pixel, so a 9600-baud link is not flooded while you drag.
+
+### Switching one channel off
+
+Each channel has its own **On / Off** switch in its header, so you can power one
+rail down and leave the other running — useful when you're bringing up a board
+one supply at a time.
+
+The instrument has a single output switch for both channels and no per-channel
+command, so "off" here means **parked**: the channel is driven to 0 V / 0 A while
+its setpoint is remembered and written back when you switch it on again. Editing
+the setpoint while a channel is parked changes what it will return to, and the
+other channel is never touched.
+
+> Parking is not isolation. The output terminals are still connected, at 0 V
+> into a 0 A limit. For anything that needs a real break, pull the lead.
+
+### What each channel has drawn
+
+Under the quick-set buttons, each channel shows the charge and energy it has
+drawn — **mAh** and **mWh**, switching to Ah and Wh once the numbers get large —
+along with the voltage and current range it has covered. That makes the app
+usable as a bench coulomb counter for battery and sleep-current work.
+
+**Reset totals** in the Monitor toolbar zeroes the counters and the min/max
+marks. They also reset whenever you connect. A stall — a suspended laptop, a
+stuck link — cannot invent charge: any gap longer than five seconds is treated
+as a pause rather than as load.
 
 ### Master bar
 
@@ -226,6 +268,7 @@ gpd3303s --detect            find an attached supply, print it, and exit
 gpd3303s --connect COM3      connect to a specific port at startup
 gpd3303s --no-autoconnect    do not search for an instrument at startup
 gpd3303s --list-ports        print every detected serial port
+gpd3303s --doctor            report which build is installed and where
 gpd3303s --where             print config and log locations
 gpd3303s --icon-path         print the path to the application icon
 gpd3303s --check-update      check for a newer release
@@ -292,7 +335,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 192 tests, no hardware needed
+uv run pytest                    # 234 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 
@@ -330,6 +373,31 @@ colour is never the only cue.
 ---
 
 ## Troubleshooting
+
+### I installed it but I'm still getting the old version
+
+Almost always a second copy earlier on your `PATH`. A `pip install` run as root
+leaves one in `/usr/local/bin`, which comes before `~/.local/bin` nearly
+everywhere, so it keeps winning however many times you reinstall.
+
+```sh
+gpd3303s --doctor
+```
+
+That lists every `gpd3303s` on your `PATH` and marks the one your shell runs.
+Delete the ones you don't want:
+
+```sh
+sudo rm /usr/local/bin/gpd3303s      # whatever --doctor points at
+hash -r                              # forget the shell's cached path
+gpd3303s --doctor                    # confirm
+```
+
+The installer performs this check itself and exits non-zero rather than claiming
+success when it has been shadowed.
+
+If `--doctor` reports **"this install still carries the retired web build"**,
+that copy predates the native app — remove it and reinstall with the one-liner.
 
 **The port isn't listed.** Install GW Instek's USB driver (Windows), or check
 `dmesg` after plugging in (Linux). `gpd3303s --list-ports` shows what the app can

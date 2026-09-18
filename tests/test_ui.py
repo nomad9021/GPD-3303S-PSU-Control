@@ -417,3 +417,110 @@ class TestSequenceFiles:
         )
         view._load_from_file()
         assert "does not contain a sequence" in view.status.text()
+
+
+class TestPerChannelSwitch:
+    """One channel off, the other still running — the switch in the panel."""
+
+    def _connected(self, window):
+        window.supply.connect(SIMULATOR_PORT)
+        window._after_connect()
+        window.supply.set_voltage(1, 12.0)
+        window.supply.set_voltage(2, 5.0)
+        window.supply.set_output(True)
+        window.supply._poll_once()
+        window._on_telemetry(window.supply.snapshot())
+        return window.channels
+
+    def test_every_channel_starts_switched_on(self, window):
+        panels = self._connected(window)
+        assert all(p.enable_button.isChecked() for p in panels)
+        assert all(p.enable_button.text() == "On" for p in panels)
+
+    def test_the_switch_parks_only_its_own_channel(self, window):
+        panels = self._connected(window)
+        panels[0].enable_button.setChecked(False)
+        panels[0]._enable_clicked()
+        window.supply._poll_once()
+        window._on_telemetry(window.supply.snapshot())
+        assert window.supply.channel_enabled(1) is False
+        assert window.supply.channel_enabled(2) is True
+        assert panels[0].enable_button.text() == "Off"
+        assert panels[1].enable_button.text() == "On"
+
+    def test_switching_back_on_restores_the_setpoint(self, window):
+        panels = self._connected(window)
+        panels[0].enable_button.setChecked(False)
+        panels[0]._enable_clicked()
+        panels[0].enable_button.setChecked(True)
+        panels[0]._enable_clicked()
+        window.supply._poll_once()
+        assert window.supply.readings[1].voltage_set == pytest.approx(12.0)
+
+    def test_polling_reflects_a_park_the_panel_did_not_start(self, window):
+        panels = self._connected(window)
+        # Something else parked it — the sequencer, a script, a reconnect.
+        window.supply.set_channel_enabled(1, False)
+        window.supply._poll_once()
+        window._on_telemetry(window.supply.snapshot())
+        assert panels[0].enable_button.isChecked() is False
+
+    def test_the_status_bar_calls_a_parked_channel_off(self, window):
+        self._connected(window)
+        window.supply.set_channel_enabled(2, False)
+        window.supply._poll_once()
+        window._on_telemetry(window.supply.snapshot())
+        assert "CH2 off" in window.status_modes.text()
+        assert "CH1 CV" in window.status_modes.text()
+
+    def test_a_parked_channel_shows_no_cv_cc_badge(self, window):
+        panels = self._connected(window)
+        window.supply.set_channel_enabled(1, False)
+        window.supply._poll_once()
+        window._on_telemetry(window.supply.snapshot())
+        assert panels[0].badge.text() == ""
+        assert panels[1].badge.text() != ""
+
+    def test_the_switch_is_disabled_until_connected(self, app, tmp_path):
+        settings = Settings(tmp_path / "s.json")
+        settings.update({"check_for_updates": False})
+        win = MainWindow(settings, PowerSupply(poll_interval=5, command_delay=0.0))
+        try:
+            assert win.channels == []
+        finally:
+            win.close()
+
+
+class TestRunningTotalsInThePanel:
+    def test_small_draws_are_shown_in_milli_units(self, app):
+        from gpd3303s.ui.channel import ChannelPanel
+
+        assert ChannelPanel._format_charge(0.0125) == "12.5 mAh"
+        assert ChannelPanel._format_energy(0.15) == "150.0 mWh"
+
+    def test_large_draws_switch_to_whole_units(self, app):
+        from gpd3303s.ui.channel import ChannelPanel
+
+        assert ChannelPanel._format_charge(2.5) == "2.500 Ah"
+        assert ChannelPanel._format_energy(30.0) == "30.000 Wh"
+
+    def test_the_panel_reports_what_has_been_drawn(self, window):
+        window.supply.connect(SIMULATOR_PORT)
+        window._after_connect()
+        window.supply.set_voltage(1, 12.0)
+        window.supply.set_output(True)
+        window.supply._poll_once()
+        window.supply.readings[1].amp_hours = 0.25
+        window.supply.readings[1].watt_hours = 3.0
+        window._on_telemetry(window.supply.snapshot())
+        assert "250.0 mAh" in window.channels[0].totals.text()
+        assert "3.000 Wh" in window.channels[0].totals.text()
+
+    def test_resetting_clears_the_counters(self, window):
+        window.supply.connect(SIMULATOR_PORT)
+        window._after_connect()
+        for _ in range(3):
+            window.supply._poll_once()
+        window.supply.readings[1].amp_hours = 5.0
+        window.reset_statistics()
+        assert window.supply.readings[1].amp_hours == 0.0

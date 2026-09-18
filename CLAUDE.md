@@ -46,6 +46,7 @@ test count quoted under Development is part of that.
 | `src/gpd3303s/recorder.py` | CSV logging |
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
 | `src/gpd3303s/assets.py` | Where the packaged icon lives. No Qt import, ever. |
+| `src/gpd3303s/doctor.py` | `--doctor`: which build is installed, and what shadows it. No Qt import. |
 | `src/gpd3303s/cli.py` | Argument parsing; builds the app and runs the Qt loop |
 | `src/gpd3303s/ui/app.py` | `MainWindow`: app bar, sidebar, instrument panel, status bar |
 | `src/gpd3303s/ui/views.py` | Monitor, Sequencer, Memory, Protection, Console |
@@ -120,6 +121,36 @@ manual settles and that are easy to get wrong:
   per axis.
 - Stick to ASCII plus well-supported glyphs in widget text; some glyphs render
   as boxes under the bundled Qt fonts.
+
+## Two builds must never share a version number
+
+`__version__` is the only thing a user can point at to say which build they
+have. When the UI was replaced, both the old web build and the new native one
+reported `1.0.0`, so a stale launcher earlier on PATH kept winning and nothing
+in the output revealed it — the user reinstalled repeatedly and kept getting the
+web page. Bump the version in the same change that alters what the app *is*.
+
+`gpd3303s --doctor` exists for the same reason. It reports the version, the
+install location, whether Qt loads, any leftover web module, and **every**
+`gpd3303s` on PATH with the winning one marked; it exits non-zero when there is
+more than one or when a retired module is present. Both installers run the same
+shadow check and refuse to report success when they have been shadowed. Keep
+`doctor.py` Qt-free: it has to run on the machine where the window won't open.
+
+## Per-channel output is parking, not switching
+
+The GPD has one output switch for both channels and no per-channel command.
+`set_channel_enabled(ch, False)` therefore drives that channel to 0 V / 0 A and
+remembers its setpoints in `PowerSupply._parked`, writing them back on re-enable.
+Consequences worth keeping straight:
+
+- `set_voltage` / `set_current` on a parked channel update the remembered target
+  instead of writing to the instrument. The panel keeps showing the setpoint, so
+  it has to mean "what it will return to".
+- `_refresh_setpoints` skips parked channels; the instrument really is at 0 V and
+  reading that back would erase the remembered value.
+- A connect clears all parking. Never present parking as isolation in the UI or
+  the docs — the terminals are still connected.
 
 ## Read and write text with an explicit encoding
 
