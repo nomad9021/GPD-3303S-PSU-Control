@@ -124,6 +124,15 @@ def _normalise(tag: str) -> str:
     return tag.lstrip("vV").strip()
 
 
+def _is_newer(candidate: str, current: str) -> bool:
+    """True when ``candidate`` is a strictly newer version than ``current``."""
+    try:
+        return Version(_normalise(candidate)) > Version(_normalise(current))
+    except InvalidVersion:
+        # An unparseable tag is not a reason to install it over a working build.
+        return False
+
+
 def check_for_update(timeout: int = _REQUEST_TIMEOUT) -> UpdateInfo:
     """Ask GitHub for the newest release and compare it with the running build."""
     method = install_method()
@@ -178,6 +187,19 @@ def apply_update(tag: Optional[str] = None) -> dict:
             tag = check_for_update().latest_version
         except Exception:  # pragma: no cover - offline is handled below
             tag = None
+        # Never walk backwards. The newest *release* can be older than what is
+        # installed -- this repository once had a v1.0.0 release carrying the
+        # retired web interface while 1.1.0 was already the native app, and
+        # "update" would have replaced a working app with that one.
+        if tag and not _is_newer(tag, __version__):
+            return {
+                "ok": False,
+                "method": method,
+                "output": (
+                    f"Already on {__version__}; the newest release is {tag}. "
+                    "Nothing to update to."
+                ),
+            }
     spec = upgrade_spec(f"v{tag}" if tag else None)
     command = _upgrade_command(method, spec)
     if command is None:

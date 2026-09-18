@@ -158,8 +158,12 @@ def test_apply_update_reports_a_failing_command():
 
 
 def test_apply_update_reports_a_missing_tool():
+    # A newer release has to be on offer, otherwise apply_update correctly
+    # declines before it ever looks for the tool.
     with mock.patch.object(updater, "install_method", return_value="pipx"):
-        with mock.patch.object(updater.subprocess, "run", side_effect=FileNotFoundError):
-            result = updater.apply_update()
+        with mock.patch.object(updater, "check_for_update") as check:
+            check.return_value = updater.UpdateInfo(latest_version="99.0.0")
+            with mock.patch.object(updater.subprocess, "run", side_effect=FileNotFoundError):
+                result = updater.apply_update()
     assert result["ok"] is False
     assert "not on PATH" in result["output"]

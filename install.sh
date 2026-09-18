@@ -36,22 +36,57 @@ have()  { command -v "$1" >/dev/null 2>&1; }
 # ---------------------------------------------------------------------------
 # Work out which release to install.
 # ---------------------------------------------------------------------------
-# Prints the release tag to install, or nothing when the repository has no
-# releases yet (in which case the caller installs the default branch).
+fetch_url() {
+  if have curl; then
+    curl -fsSL "$1" 2>/dev/null
+  elif have wget; then
+    wget -qO- "$1" 2>/dev/null
+  fi
+}
+
+latest_release_tag() {
+  fetch_url "https://api.github.com/repos/$REPO/releases/latest" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# The version in the default branch's source, which is the newest code there is.
+default_branch_version() {
+  fetch_url "https://raw.githubusercontent.com/$REPO/HEAD/src/gpd3303s/__init__.py" \
+    | sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Prints the ref to install.
+#
+# Normally that is the latest release. But a release can lag the code badly --
+# this repository once had a v1.0.0 release holding the retired web interface
+# while the default branch had the native app, so every `curl | sh` installed
+# the old UI and looked broken. So: compare the two and take whichever is
+# newer, which self-heals as soon as a current release exists.
 resolve_ref() {
   if [ -n "$REF" ]; then
     printf '%s' "$REF"
     return
   fi
-  tag=''
-  if have curl; then
-    tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) || tag=''
-  elif have wget; then
-    tag=$(wget -qO- "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) || tag=''
+
+  tag=$(latest_release_tag)
+  [ -n "$tag" ] || return 0                 # no releases: caller uses the branch
+
+  head_version=$(default_branch_version)
+  if [ -z "$head_version" ]; then
+    printf '%s' "$tag"                      # cannot compare; trust the release
+    return
   fi
-  printf '%s' "$tag"
+
+  tag_version=${tag#v}
+  newest=$(printf '%s\n%s\n' "$tag_version" "$head_version" | sort -V | tail -n 1)
+  if [ "$newest" = "$tag_version" ]; then
+    printf '%s' "$tag"
+  else
+    # The branch is ahead of the newest release; install the branch.
+    warn "The latest release ($tag) is older than the current code ($head_version)."
+    printf '    Installing the default branch instead. Pin a release with GPD3303S_REF=%s\n\n' "$tag" >&2
+    return 0
+  fi
 }
 
 METHOD=""
@@ -60,6 +95,46 @@ record_method() {
   METHOD="$1"
   mkdir -p "$MARKER_DIR"
   printf '%s' "$1" > "$MARKER_DIR/install-method"
+}
+
+# ---------------------------------------------------------------------------
+# Old installs are why "I reinstalled and still get the old version" happens:
+# a launcher from a previous method stays on PATH and keeps winning. Clear out
+# the ones we can reach, and name the ones that need root.
+# ---------------------------------------------------------------------------
+purge_old_installs() {
+  removed=""
+  name="gpd3303s"
+
+  # Launchers on PATH that are not the one we are about to create.
+  IFS=:
+  for entry in $PATH; do
+    [ -n "$entry" ] || continue
+    candidate="$entry/$name"
+    [ -f "$candidate" ] || continue
+    [ "$candidate" = "$BIN_DIR/$name" ] && continue
+    case "$candidate" in
+      "$HOME"/*)
+        rm -f "$candidate" 2>/dev/null && removed="$removed $candidate" ;;
+      *)
+        NEEDS_ROOT="$NEEDS_ROOT $candidate" ;;
+    esac
+  done
+  unset IFS
+
+  # A pip install of this package shadows nothing by itself, but it owns the
+  # launchers above and will put them back on the next `pip install`.
+  for py in python3 python; do
+    have "$py" || continue
+    if "$py" -m pip show gpd3303s-control >/dev/null 2>&1; then
+      "$py" -m pip uninstall -y gpd3303s-control >/dev/null 2>&1 &&
+        removed="$removed (pip: gpd3303s-control)"
+    fi
+    break
+  done
+
+  [ -n "$removed" ] && info "Removed previous install:$removed"
+  return 0
 }
 
 # Put the app in the applications menu so it launches like any other program.
@@ -83,13 +158,17 @@ install_desktop_entry() {
       cp -f "$icon_dir/icon.svg" "$icons_dir/gpd3303s-control.svg" 2>/dev/null || true
   fi
 
+  # An absolute path, never a bare name: a menu entry that goes through PATH
+  # can be hijacked by whatever else is installed, which is the whole bug.
+  DESKTOP_EXEC="${APP_BINARY:-$LAUNCHER}"
+
   cat > "$apps_dir/gpd3303s-control.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=GPD Control
 GenericName=DC Power Supply Control
 Comment=Control a GW Instek GPD-series programmable DC power supply
-Exec=$LAUNCHER
+Exec=$DESKTOP_EXEC
 Icon=gpd3303s-control
 Terminal=false
 Categories=Development;Electronics;Engineering;
@@ -158,6 +237,10 @@ if [ -n "$EXTRA" ]; then
 fi
 
 printf '\n%sGPD-3303S Control%s — installing %s\n\n' "$BOLD" "$RESET" "$REF"
+
+# Clear out earlier installs first, so the launcher we create is the only one.
+NEEDS_ROOT=""
+purge_old_installs
 
 # ---------------------------------------------------------------------------
 # Install, preferring the most isolated tool available.
@@ -230,9 +313,9 @@ check_shadowing() {
   printf '\n%serror%s Another gpd3303s is shadowing the one just installed.\n\n' "$RED" "$RESET" >&2
   printf '       just installed:  %s\n' "$LAUNCHER" >&2
   printf '       but PATH finds:  %s   <- this is what runs\n\n' "$resolved" >&2
-  printf '       That older copy is probably a leftover `pip install`. Remove it:\n\n' >&2
-  printf '         rm %s\n\n' "$resolved" >&2
-  printf '       (use sudo if it lives outside your home directory), then run:\n\n' >&2
+  printf '       It is outside your home directory, so removing it needs sudo:\n\n' >&2
+  printf '         sudo rm %s\n\n' "$resolved" >&2
+  printf '       then run:\n\n' >&2
   printf '         gpd3303s --doctor\n\n' >&2
   SHADOWED=1
 }
