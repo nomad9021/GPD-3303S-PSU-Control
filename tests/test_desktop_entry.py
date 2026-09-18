@@ -15,6 +15,14 @@ import pytest
 from gpd3303s import desktop_entry
 
 
+# Desktop entries are a Linux concept and the Exec line is a POSIX path: on
+# Windows, Path("/opt/x") resolves to "D:\\opt\\x" and these expectations are
+# meaningless. TestOtherPlatforms below covers what the other platforms do.
+LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux desktop entries"
+)
+
+
 @pytest.fixture
 def share(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
@@ -22,6 +30,7 @@ def share(tmp_path, monkeypatch):
     return tmp_path / "share"
 
 
+@LINUX_ONLY
 class TestTheExecLine:
     def test_the_frozen_build_points_at_itself(self, monkeypatch):
         monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -54,7 +63,7 @@ class TestTheExecLine:
         assert Path(first).is_absolute()
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux desktop entries")
+@LINUX_ONLY
 class TestWritingTheEntry:
     def test_it_writes_the_entry_and_both_icons(self, share):
         written = desktop_entry.install()
@@ -90,3 +99,19 @@ class TestWritingTheEntry:
         out = capsys.readouterr().out
         assert "applications menu" in out
         assert "It launches:" in out
+
+
+class TestOtherPlatforms:
+    """Runs everywhere: installing a Linux menu entry elsewhere must refuse."""
+
+    def test_it_refuses_off_linux(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        with pytest.raises(RuntimeError, match="Linux"):
+            desktop_entry.install()
+
+    def test_the_cli_path_reports_that_rather_than_raising(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        assert desktop_entry.run() == 1
+        assert "Could not add the menu entry" in capsys.readouterr().err
