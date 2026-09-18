@@ -11,7 +11,30 @@ from dataclasses import dataclass
 from typing import List
 
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
+
+#: Where :func:`restyle` remembers what it last applied to a widget.
+_APPLIED = "_gpd_stylesheet"
+
+
+def restyle(widget: QWidget, sheet: str) -> bool:
+    """Set ``widget``'s stylesheet, but only when it actually changed.
+
+    ``setStyleSheet`` is not a cheap assignment: Qt unpolishes and repolishes
+    the widget and everything below it, re-resolves the cascade and forces a
+    relayout. The live readouts rebuild their stylesheet string on every
+    telemetry snapshot, and that string is identical almost every time -- the
+    colour only moves when a channel goes dim, changes CV/CC mode or is
+    parked. Reapplying it several times a second for every channel was the
+    single largest cost in the UI thread, so compare first and return.
+
+    Returns True when the sheet was applied.
+    """
+    if getattr(widget, _APPLIED, None) == sheet:
+        return False
+    setattr(widget, _APPLIED, sheet)
+    widget.setStyleSheet(sheet)
+    return True
 
 
 @dataclass(frozen=True)

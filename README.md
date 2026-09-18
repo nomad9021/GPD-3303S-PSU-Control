@@ -348,7 +348,9 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 * Commands are capped at **15 characters**, are case-insensitive, and terminate
   with `\n` (or `\r\n`).
 * Minimum response time is **10 ms at 115200 baud**, and longer on slower links,
-  so the inter-command delay scales with the negotiated rate.
+  so the inter-command delay scales with the negotiated rate. It is paid before
+  the *next* command rather than after the last, and only after a command the
+  instrument did not answer — a reply is proof it has finished.
 * Rated output is **0–30 V / 0–3 A** per main channel (60 V in series, 6 A in
   parallel). The command parser accepts up to 32 V / 3.2 A, but setpoints are
   clamped to the rated figures.
@@ -363,7 +365,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 268 tests, no hardware needed
+uv run pytest                    # 287 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 
@@ -395,7 +397,9 @@ Layout:
 
 The device layer knows nothing about the UI: it pushes telemetry to callbacks,
 and `bridge.py` turns those into Qt signals so the polling thread never touches a
-widget.
+widget. Traffic the other way goes through the same file's `CommandQueue`: every
+setpoint, output toggle and memory recall is a serial write that waits on the
+instrument, so it runs on a worker thread rather than freezing the window.
 
 Chart colours come from a palette validated for colour-vision deficiency in both
 themes; every series also carries a direct end label and a live-value legend so
@@ -440,9 +444,11 @@ or set it by hand — the factory default is 9600.
 
 **"Permission denied" on Linux.** Add yourself to the `dialout` group (above).
 
-**Values look stale.** Lower the poll interval in the Monitor toolbar. Very short
-intervals over a slow serial link can queue up; 2.5 Hz is a good default. At
-9600 baud each poll needs noticeably longer than at 115200.
+**Values look stale.** Check the poll rate in the Monitor toolbar; 2.5 Hz is a
+good default. A poll is five queries, which at the factory 9600 baud costs well
+under a tenth of the 400 ms interval, so the rate you pick is the rate you get.
+At 5 Hz with the 15-minute chart window on screen the drawing starts to be the
+expensive part, not the link.
 
 **The window won't open on a minimal Linux install.** Qt needs a few system
 libraries that desktop images already have but containers and server installs

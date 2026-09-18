@@ -139,6 +139,44 @@ more than one or when a retired module is present. Both installers run the same
 shadow check and refuse to report success when they have been shadowed. Keep
 `doctor.py` Qt-free: it has to run on the machine where the window won't open.
 
+## What made it feel slow, and what keeps it fast
+
+Four things, each cheap to undo by accident. `tests/test_responsiveness.py`
+pins all four.
+
+**The response delay is paid before the next command, not after the last.**
+`command_delay_for` scales the manual's minimum response time with the baud
+rate: 120 ms at the factory 9600. It used to be slept off after *every*
+command, including queries — so a five-query poll spent 600 ms doing nothing,
+the 400 ms poll interval was never honoured, and readings arrived at 1.6 Hz.
+A reply is proof the instrument has finished, so `_query` clears the pacing
+deadline and only `_write` sets one. A poll costs ~20 ms now. Keep the pacing
+for writes: it is what stops a slow unit being overrun.
+
+**Never hand Qt a stylesheet it already has.** `setStyleSheet` unpolishes and
+repolishes the widget and its children and forces a relayout; it is not an
+assignment. The readouts rebuild their stylesheet string on every snapshot and
+it is identical almost every time, so `ui/theme.py` has `restyle`, which
+compares before applying. Use it for anything on the telemetry path. Applying
+per-widget stylesheets is still the convention — re-applying unchanged ones is
+the bug.
+
+**Instrument writes never run on the GUI thread.** A setpoint is a serial write
+that waits on the instrument behind the poller's lock, so doing it inline froze
+the window for every slider release, and for the full 1 s read timeout when the
+link did not answer. `ui/bridge.py`'s `CommandQueue` runs them on a worker in
+FIFO order; `MainWindow._dispatch` is the way in, and `_guard` is only for the
+few callers that need the outcome before continuing. The emergency stop uses
+`submit_now`, which clears what is pending and goes first — setpoints from a
+drag must not land after the output was killed.
+
+**The chart draws no more points than it has pixels.** 15 minutes at 5 Hz is
+4500 samples per trace against ~800 pixels. `_decimate` buckets them one per
+pixel column and keeps each bucket's lowest and highest sample. Keeping both is
+the point: thinning to one sample per column would drop exactly the transients
+someone is watching for. `_visible` bisects rather than scanning the whole
+retention window, and `push` trims the expired head in one slice.
+
 ## Per-channel output is parking, not switching
 
 The GPD has one output switch for both channels and no per-channel command.

@@ -47,9 +47,9 @@ from ..protocol import SUPPORTED_BAUD_RATES, TrackingMode
 from ..recorder import Recorder
 from ..sequencer import Sequencer
 from ..updater import UpdateChecker, UpdateInfo, apply_update
-from .bridge import DeviceBridge
+from .bridge import CommandQueue, DeviceBridge
 from .channel import ChannelPanel
-from .theme import Theme, apply as apply_theme, resolve as resolve_theme
+from .theme import Theme, apply as apply_theme, resolve as resolve_theme, restyle
 from .views import ConsoleView, MemoryView, MonitorView, ProtectionView, SequencerView
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,9 @@ class MainWindow(QMainWindow):
         self.bridge = DeviceBridge(supply)
         self.bridge.telemetry.connect(self._on_telemetry)
         self.bridge.sequence.connect(self._on_sequence)
+        # Instrument writes go here rather than running on the GUI thread.
+        self.commands = CommandQueue(self)
+        self.commands.failed.connect(lambda message: self._warn("Instrument error", message))
         self.sequencer = Sequencer(supply, on_change=self.bridge.on_sequence)
 
         self.setWindowTitle(f"GPD Control {__version__}")
@@ -361,27 +364,31 @@ class MainWindow(QMainWindow):
         for view in (self.monitor, self.sequencer_view, self.memory,
                      self.protection, self.console):
             view.set_theme(theme)
-        self.master_bar.setStyleSheet(
+        restyle(
+            self.master_bar,
             f"#MasterBar {{ background: {theme.base}; border: 1px solid {theme.border};"
             f" border-radius: 7px; }}"
             f" QLabel#TotalPower {{ font-size: 18px; font-weight: 600;"
-            f" color: {theme.text}; }}"
+            f" color: {theme.text}; }}",
         )
-        self.trip_banner.setStyleSheet(
+        restyle(
+            self.trip_banner,
             f"background: {theme.critical}; color: #ffffff; padding: 7px;"
-            f" border-radius: 5px; font-weight: 600;"
+            f" border-radius: 5px; font-weight: 600;",
         )
-        self.update_banner.setStyleSheet(
+        restyle(
+            self.update_banner,
             f"#UpdateBanner {{ background: {theme.base}; color: {theme.text};"
-            f" border: 1px solid {theme.accent}; border-radius: 5px; }}"
+            f" border: 1px solid {theme.accent}; border-radius: 5px; }}",
         )
         self._refresh_status_colours()
 
     def _refresh_status_colours(self) -> None:
         connected = self._last.connected if self._last else False
-        self.link_dot.setStyleSheet(
+        restyle(
+            self.link_dot,
             f"color: {self.theme.good if connected else self.theme.text_muted};"
-            " font-size: 13px;"
+            " font-size: 13px;",
         )
 
     # -- connection --------------------------------------------------------- #
@@ -505,6 +512,11 @@ class MainWindow(QMainWindow):
     # -- instrument commands ------------------------------------------------ #
 
     def _guard(self, action, *args) -> bool:
+        """Run a command here and now, reporting failure. Blocks the GUI thread.
+
+        Only for the few places that need the outcome before going on; user
+        actions should use :meth:`_dispatch`.
+        """
         try:
             action(*args)
             return True
@@ -512,9 +524,23 @@ class MainWindow(QMainWindow):
             self._warn("Instrument error", str(exc))
             return False
 
+    def _dispatch(self, action, *args, then=None) -> None:
+        """Queue a command for the worker thread and return immediately.
+
+        A setpoint is a serial write that waits out the instrument's
+        processing time behind the poller's lock. Doing that inline froze the
+        window for the duration of every slider release and every output
+        toggle, so it is handed off instead. Errors come back on the
+        ``failed`` signal.
+        """
+        self.commands.submit(action, *args, then=then)
+
     def _set_channel_enabled(self, channel: int, enabled: bool) -> None:
-        self._guard(self.supply.set_channel_enabled, channel, enabled)
-        self._refresh_from_supply()
+        # Parking writes two setpoints; repaint once the worker has done both.
+        self._dispatch(
+            self.supply.set_channel_enabled, channel, enabled,
+            then=self._refresh_from_supply,
+        )
 
     def reset_statistics(self) -> None:
         self.supply.reset_statistics()
@@ -526,32 +552,39 @@ class MainWindow(QMainWindow):
             self._on_telemetry(self.supply.snapshot())
 
     def _set_voltage(self, channel: int, value: float) -> None:
-        self._guard(self.supply.set_voltage, channel, value)
+        self._dispatch(self.supply.set_voltage, channel, value)
 
     def _set_current(self, channel: int, value: float) -> None:
-        self._guard(self.supply.set_current, channel, value)
+        self._dispatch(self.supply.set_current, channel, value)
 
     def toggle_output(self) -> None:
         wanted = not (self._last.output if self._last else False)
-        if self._guard(self.supply.set_output, wanted) and wanted:
-            self.trip_banner.setVisible(False)
+        # Re-arming clears the trip banner; a failed write leaves the output
+        # off and the next snapshot puts the banner back.
+        self._dispatch(
+            self.supply.set_output, wanted,
+            then=(lambda: self.trip_banner.setVisible(False)) if wanted else None,
+        )
 
     def _emergency_off(self) -> None:
+        # Ahead of anything queued, and dropping it: setpoints from a slider
+        # the user was still dragging must not land after the kill switch.
         if self.supply.connected:
-            self._guard(self.supply.set_output, False)
+            self.commands.submit_now(self.supply.set_output, False)
 
     def set_tracking(self, mode: TrackingMode) -> None:
-        self._guard(self.supply.set_tracking, mode)
+        self._dispatch(self.supply.set_tracking, mode)
 
     def set_beep(self, enabled: bool) -> None:
         if self.supply.connected:
-            self._guard(self.supply.set_beep, enabled)
+            self._dispatch(self.supply.set_beep, enabled)
 
     def save_memory(self, slot: int) -> None:
-        self._guard(self.supply.save_memory, slot)
+        self._dispatch(self.supply.save_memory, slot)
 
     def recall_memory(self, slot: int) -> None:
-        self._guard(self.supply.recall_memory, slot)
+        # A recall re-reads every setpoint, so repaint once it has landed.
+        self._dispatch(self.supply.recall_memory, slot, then=self._refresh_from_supply)
 
     def send_command(self, command: str) -> None:
         self.console.append(f"> {command}", "tx")
@@ -607,11 +640,14 @@ class MainWindow(QMainWindow):
         presets = self.settings.get("presets", []) or []
         if not 0 <= index < len(presets):
             return
+        # Queued in order, so the pair for each channel still arrives together.
+        # A failure reports itself rather than silently dropping the rest.
         for channel in presets[index]["channels"]:
-            if not self._guard(self.supply.set_voltage, channel["channel"], channel["voltage"]):
-                return
-            if not self._guard(self.supply.set_current, channel["channel"], channel["current"]):
-                return
+            self._dispatch(self.supply.set_voltage, channel["channel"], channel["voltage"])
+            self._dispatch(self.supply.set_current, channel["channel"], channel["current"])
+        # Repaint once, after the whole preset has landed, rather than part-way
+        # through it. Nothing to run, so the command itself is empty.
+        self._dispatch(lambda: None, then=self._refresh_from_supply)
 
     def delete_preset(self, index: int) -> None:
         presets = list(self.settings.get("presets", []) or [])
@@ -665,10 +701,9 @@ class MainWindow(QMainWindow):
             self._set_connected(False, telemetry)
             return
 
+        by_channel = {r["channel"]: r for r in telemetry.channels}
         for panel in self.channels:
-            reading = next(
-                (r for r in telemetry.channels if r["channel"] == panel.index), None
-            )
+            reading = by_channel.get(panel.index)
             if reading:
                 panel.apply_reading(reading, telemetry.output)
 
@@ -676,10 +711,11 @@ class MainWindow(QMainWindow):
 
         self.output_button.setChecked(telemetry.output)
         self.output_button.setText("Output On" if telemetry.output else "Output Off")
-        self.output_button.setStyleSheet(
+        restyle(
+            self.output_button,
             f"QPushButton {{ font-weight: 700; color: {self.theme.good};"
             f" border: 2px solid {self.theme.good}; border-radius: 16px; padding: 4px 16px; }}"
-            if telemetry.output else ""
+            if telemetry.output else "",
         )
 
         self.beep_check.blockSignals(True)
@@ -693,8 +729,9 @@ class MainWindow(QMainWindow):
         self.total_power.setText(f"{total:.2f} W")
         self.status_total.setText(f"{total:.2f} W total")
         self.status_output.setText("Output on" if telemetry.output else "Output off")
-        self.status_output.setStyleSheet(
-            f"color: {self.theme.good}; font-weight: 600;" if telemetry.output else ""
+        restyle(
+            self.status_output,
+            f"color: {self.theme.good}; font-weight: 600;" if telemetry.output else "",
         )
         # A parked channel is not regulating anything, so reporting CV for it
         # would contradict the panel, which shows no badge at all.
@@ -705,7 +742,7 @@ class MainWindow(QMainWindow):
             ) if telemetry.output else ""
         )
         self.status_record.setText("● Recording" if self.recorder.active else "")
-        self.status_record.setStyleSheet(f"color: {self.theme.critical};")
+        restyle(self.status_record, f"color: {self.theme.critical};")
 
         if telemetry.trip:
             self.trip_banner.setText(f"Protection tripped — output disabled. {telemetry.trip}")
@@ -765,5 +802,9 @@ class MainWindow(QMainWindow):
         self.sequencer.stop()
         self.recorder.stop()
         self.bridge.close()
+        # Let queued commands land before the link goes, so a setpoint sent a
+        # moment before closing is not dropped.
+        self.commands.flush(timeout=2.0)
+        self.commands.close()
         self.supply.disconnect()
         super().closeEvent(event)

@@ -270,6 +270,8 @@ class PowerSupply:
             else protocol.command_delay_for(protocol.DEFAULT_BAUD_RATE)
         )
         self.baud_rate: Optional[int] = None
+        #: Monotonic time before which the next command must not be sent.
+        self._next_command_at = 0.0
 
         self.spec: ModelSpec = protocol.MODELS[protocol.DEFAULT_MODEL]
         self.identity = ""
@@ -413,29 +415,48 @@ class PowerSupply:
 
     # -- low-level I/O ------------------------------------------------------ #
 
+    def _pace(self) -> None:
+        """Wait out the instrument's processing time for the previous command.
+
+        Only a command we got no reply to leaves a deadline behind: see
+        :meth:`_query`. Waiting on a deadline rather than sleeping outright
+        means a gap the caller has already spent elsewhere costs nothing.
+        Called with the lock held, so the gap cannot be jumped by another
+        thread.
+        """
+        remaining = self._next_command_at - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+
     def _write(self, command: str) -> None:
         if self._serial is None:
             raise DeviceError("Not connected")
         with self._lock:
+            self._pace()
             try:
                 self._serial.write((command + protocol.TERMINATOR).encode("ascii"))
             except (serial.SerialException, OSError) as exc:
                 raise DeviceError(f"Write failed: {exc}") from exc
-            if self.command_delay:
-                time.sleep(self.command_delay)
+            # Nothing comes back from a setting command, so the only way to
+            # know the instrument has finished with it is to wait.
+            self._next_command_at = time.monotonic() + self.command_delay
 
     def _query(self, command: str) -> str:
         if self._serial is None:
             raise DeviceError("Not connected")
         with self._lock:
+            self._pace()
             try:
                 self._serial.reset_input_buffer()
                 self._serial.write((command + protocol.TERMINATOR).encode("ascii"))
                 raw = self._serial.readline()
             except (serial.SerialException, OSError) as exc:
                 raise DeviceError(f"Query failed: {exc}") from exc
-            if self.command_delay:
-                time.sleep(self.command_delay)
+            # A reply is proof the instrument has finished: the manual's
+            # response time is how long it takes to answer, and it just did.
+            # Sleeping it off again here cost a five-query poll 600 ms of dead
+            # air at 9600 baud, which is most of what made the app feel slow.
+            self._next_command_at = 0.0
         return raw.decode("ascii", errors="ignore").strip()
 
     # -- instrument commands ------------------------------------------------ #

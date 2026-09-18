@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..protocol import ChannelMode
-from .theme import Theme
+from .theme import Theme, restyle
 
 #: Voltages people reach for most often.
 QUICK_SET_VOLTAGES = (3.3, 5.0, 9.0, 12.0, 15.0, 24.0)
@@ -55,22 +55,24 @@ class Readout(QWidget):
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
-        size = 26 if self.big else 17
-        self.value.setStyleSheet(
-            f"color: {theme.text}; font-size: {size}px; font-weight: 600;"
-        )
-        self.caption.setStyleSheet(
+        restyle(self.value, self._value_style(dim=False))
+        restyle(
+            self.caption,
             f"color: {theme.text_muted}; font-size: 9px; font-weight: 600;"
-            " letter-spacing: 1px;"
+            " letter-spacing: 1px;",
         )
 
-    def set_value(self, value: float, dim: bool = False) -> None:
-        self.value.setText(f"{value:.{self.decimals}f} {self.unit}")
+    def _value_style(self, dim: bool) -> str:
         size = 26 if self.big else 17
         colour = self.theme.text_muted if dim else self.theme.text
-        self.value.setStyleSheet(
-            f"color: {colour}; font-size: {size}px; font-weight: 600;"
-        )
+        return f"color: {colour}; font-size: {size}px; font-weight: 600;"
+
+    def set_value(self, value: float, dim: bool = False) -> None:
+        # Runs several times a second per channel, so both halves guard
+        # themselves: QLabel.setText is a no-op for identical text, and
+        # restyle only touches the widget when the colour has actually moved.
+        self.value.setText(f"{value:.{self.decimals}f} {self.unit}")
+        restyle(self.value, self._value_style(dim))
 
 
 class ModeBadge(QLabel):
@@ -91,13 +93,14 @@ class ModeBadge(QLabel):
         self._mode = mode
         if mode is None:
             self.setText("")
-            self.setStyleSheet("")
+            restyle(self, "")
             return
         colour = self.theme.good if mode is ChannelMode.CV else self.theme.serious
         self.setText(mode.value.upper())
-        self.setStyleSheet(
+        restyle(
+            self,
             f"color: {colour}; border: 1px solid {colour}; border-radius: 7px;"
-            " padding: 1px; font-size: 10px; font-weight: 700;"
+            " padding: 1px; font-size: 10px; font-weight: 700;",
         )
 
 
@@ -321,17 +324,18 @@ class ChannelPanel(QFrame):
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
         colour = theme.series[(self.index - 1) % len(theme.series)]
-        self.swatch.setStyleSheet(f"background: {colour}; border-radius: 2px;")
-        self.name.setStyleSheet(f"color: {theme.text}; font-size: 15px; font-weight: 700;")
-        self.rating.setStyleSheet(f"color: {theme.text_muted}; font-size: 10px;")
-        self.totals.setStyleSheet(f"color: {theme.text_muted}; font-size: 10px;")
+        restyle(self.swatch, f"background: {colour}; border-radius: 2px;")
+        restyle(self.name, f"color: {theme.text}; font-size: 15px; font-weight: 700;")
+        restyle(self.rating, f"color: {theme.text_muted}; font-size: 10px;")
+        restyle(self.totals, f"color: {theme.text_muted}; font-size: 10px;")
         self._restyle_enable()
-        self.setStyleSheet(
+        restyle(
+            self,
             f"ChannelPanel {{ background: {theme.base};"
             f" border: 1px solid {theme.border}; border-radius: 7px;"
             f" border-top: 3px solid {colour}; }}"
             f" QLabel#SetpointLabel {{ color: {theme.text_dim}; font-size: 10px;"
-            f" font-weight: 600; letter-spacing: 1px; }}"
+            f" font-weight: 600; letter-spacing: 1px; }}",
         )
         for widget in (self.volts, self.amps, self.watts):
             widget.set_theme(theme)
@@ -341,7 +345,8 @@ class ChannelPanel(QFrame):
         """Colour the switch by state: a parked channel has to be obvious."""
         on = self.enable_button.isChecked()
         colour = self.theme.good if on else self.theme.text_muted
-        self.enable_button.setStyleSheet(
+        restyle(
+            self.enable_button,
             f"QPushButton {{ color: {colour}; border: 1px solid {colour};"
-            f" border-radius: 11px; font-size: 10px; font-weight: 700; }}"
+            f" border-radius: 11px; font-size: 10px; font-weight: 700; }}",
         )

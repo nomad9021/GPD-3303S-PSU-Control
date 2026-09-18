@@ -10,6 +10,7 @@ colour alone.
 from __future__ import annotations
 
 import time
+from operator import itemgetter
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QPoint, QRect, Qt
@@ -22,6 +23,19 @@ PAD_LEFT = 44
 PAD_RIGHT = 62
 PAD_TOP = 20
 PAD_BOTTOM = 18
+
+#: Samples are kept a little past the widest selectable window, so switching
+#: windows does not reveal an empty chart.
+RETENTION_S = 1000.0
+#: Hard ceiling on retained samples, so a fast poll rate cannot grow the list
+#: without bound if timestamps ever go backwards.
+MAX_SAMPLES = 20000
+#: Key for the value half of a (timestamp, value) point.
+_VALUE = itemgetter(1)
+
+#: Points drawn per pixel column. Two, so a column can carry both the lowest
+#: and the highest sample that fell in it.
+POINTS_PER_COLUMN = 2
 
 
 def _nice_step(span: float, target: int) -> float:
@@ -102,13 +116,14 @@ class StripChart(QWidget):
 
     def push(self, timestamp: float, values: Dict[int, float]) -> None:
         self.samples.append((timestamp, dict(values)))
-        # Hold a little more than the widest selectable window so switching
-        # window sizes does not reveal an empty chart.
-        cutoff = timestamp - 1000.0
-        while self.samples and self.samples[0][0] < cutoff:
-            self.samples.pop(0)
-        if len(self.samples) > 20000:
-            del self.samples[: len(self.samples) - 20000]
+        # Drop the expired head in one slice. Popping the front per sample is
+        # a whole-list memmove each time, paid on every single poll.
+        cutoff = timestamp - RETENTION_S
+        expired = self._first_at_or_after(cutoff)
+        if expired:
+            del self.samples[:expired]
+        if len(self.samples) > MAX_SAMPLES:
+            del self.samples[: len(self.samples) - MAX_SAMPLES]
         self.update()
 
     # -- interaction -------------------------------------------------------- #
@@ -121,12 +136,27 @@ class StripChart(QWidget):
         self._hover_x = None
         self.update()
 
+    def _first_at_or_after(self, timestamp: float) -> int:
+        """Index of the oldest sample at or after ``timestamp``.
+
+        ``samples`` is append-only in timestamp order, so this is a bisect.
+        Scanning instead made every repaint cost the whole retention window
+        rather than the part of it actually on screen.
+        """
+        lo, hi = 0, len(self.samples)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.samples[mid][0] < timestamp:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
     def _visible(self) -> List[Tuple[float, Dict[int, float]]]:
         if not self.samples:
             return []
-        newest = self.samples[-1][0]
-        start = newest - self.window_seconds
-        return [s for s in self.samples if s[0] >= start]
+        start = self.samples[-1][0] - self.window_seconds
+        return self.samples[self._first_at_or_after(start):]
 
     def _series_colour(self, index: int) -> QColor:
         palette = self.theme.series
@@ -180,10 +210,11 @@ class StripChart(QWidget):
         # Legend, right-aligned: every series named, with its live value.
         latest = self.samples[-1][1] if self.samples else {}
         x = self.width() - 10
+        legend_metrics = QFontMetrics(self.font())
         for index, label in reversed(self.channels):
             value = latest.get(index)
             text = f"{label} {value:.{self.decimals}f}" if value is not None else label
-            width = QFontMetrics(self.font()).horizontalAdvance(text)
+            width = legend_metrics.horizontalAdvance(text)
             x -= width
             painter.setPen(QColor(t.text_dim))
             painter.drawText(QPoint(x, 14), text)
@@ -248,12 +279,25 @@ class StripChart(QWidget):
             QRect(plot.right() - 40, plot.bottom() + 2, 40, 14), Qt.AlignRight, "now"
         )
 
+        budget = max(2, plot.width() * POINTS_PER_COLUMN)
+        # Scale once per trace rather than calling _x_for/_y_for per point:
+        # at a pixel-dense window that was thousands of Python calls a frame.
+        low, high = span
+        x_left, x_scale = plot.left(), plot.width() / max(t1 - t0, 0.001)
+        y_bottom = plot.bottom()
+        y_scale = plot.height() / (high - low) if high > low else 0.0
+
         for index, _label in self.channels:
             colour = self._series_colour(index)
+            series = [
+                (ts, vals[index]) for ts, vals in visible if vals.get(index) is not None
+            ]
             points = [
-                QPoint(self._x_for(ts, plot, t0, t1), self._y_for(vals[index], plot, span))
-                for ts, vals in visible
-                if vals.get(index) is not None
+                QPoint(
+                    int(x_left + (ts - t0) * x_scale),
+                    int(y_bottom - (value - low) * y_scale),
+                )
+                for ts, value in self._decimate(series, budget)
             ]
             if len(points) < 2:
                 continue
@@ -277,6 +321,51 @@ class StripChart(QWidget):
                 Qt.AlignLeft | Qt.AlignVCenter,
                 f"{value:.{self.decimals}f}",
             )
+
+    @staticmethod
+    def _decimate(
+        series: List[Tuple[float, float]], budget: int
+    ) -> List[Tuple[float, float]]:
+        """Thin ``series`` to about ``budget`` points for drawing.
+
+        A 15-minute window at 5 Hz is 4500 samples per trace, which is several
+        samples per pixel column: the extra ones cost antialiased line
+        rendering and land on top of each other.
+
+        Each bucket contributes its lowest and highest sample, in the order
+        they occur, rather than one sample taken per bucket. Picking one would
+        drop transients — the spikes are the reason someone watches a supply —
+        whereas keeping both extremes preserves the trace's envelope exactly
+        as the full-resolution polyline would draw it.
+        """
+        count = len(series)
+        if count <= budget:
+            return series
+
+        buckets = max(1, budget // 2)
+        thinned: List[Tuple[float, float]] = []
+        for bucket in range(buckets):
+            start = bucket * count // buckets
+            stop = (bucket + 1) * count // buckets
+            if start >= stop:
+                continue
+            chunk = series[start:stop]
+            # itemgetter is C-level; a lambda here is called once per sample
+            # and cost more than the drawing it was feeding.
+            lowest = min(chunk, key=_VALUE)
+            highest = max(chunk, key=_VALUE)
+            if lowest[0] <= highest[0]:
+                thinned.append(lowest)
+                if highest is not lowest:
+                    thinned.append(highest)
+            else:
+                thinned.append(highest)
+                thinned.append(lowest)
+        # The newest sample anchors the end marker and its direct label, so it
+        # has to survive whatever the bucketing did.
+        if thinned[-1] != series[-1]:
+            thinned.append(series[-1])
+        return thinned
 
     def _draw_crosshair(self, painter: QPainter, plot: QRect, visible, span) -> None:
         if self._hover_x is None or not plot.left() <= self._hover_x <= plot.right():

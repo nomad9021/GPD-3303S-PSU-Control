@@ -256,6 +256,7 @@ class TestMainWindow:
         window._after_connect()
         window.supply.set_output(True)
         window._emergency_off()
+        assert window.commands.flush(), "the command worker did not drain"
         assert window.supply.status.output is False
 
     def test_a_trip_raises_the_banner(self, window):
@@ -441,6 +442,7 @@ class TestPerChannelSwitch:
         panels = self._connected(window)
         panels[0].enable_button.setChecked(False)
         panels[0]._enable_clicked()
+        assert window.commands.flush(), "the command worker did not drain"
         window.supply._poll_once()
         window._on_telemetry(window.supply.snapshot())
         assert window.supply.channel_enabled(1) is False
@@ -454,6 +456,7 @@ class TestPerChannelSwitch:
         panels[0]._enable_clicked()
         panels[0].enable_button.setChecked(True)
         panels[0]._enable_clicked()
+        assert window.commands.flush(), "the command worker did not drain"
         window.supply._poll_once()
         assert window.supply.readings[1].voltage_set == pytest.approx(12.0)
 
