@@ -165,8 +165,14 @@ standalone app reporting 1.1.0, because `pyproject.toml` carried its own copy
 and only `__init__.py` had been bumped. The release workflow's tag check read
 `__init__.py`, so nothing noticed. It now also asserts the built wheel and sdist
 are *named* for the tag, and `tests/test_version_is_single_sourced.py` fails if
-the static version comes back or the installed metadata disagrees with the
-module.
+the static version comes back, or if the file hatchling is pointed at does not
+hold the version the module reports.
+
+That test deliberately does **not** compare against the *installed*
+distribution. An editable install keeps the metadata from when it was
+installed, so every version bump would fail it until someone reinstalled —
+a stale venv, not this bug, and crying wolf at each bump would train people to
+ignore it.
 
 ## A release can be older than the code
 
