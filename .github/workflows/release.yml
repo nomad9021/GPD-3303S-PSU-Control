@@ -50,6 +50,22 @@ jobs:
       - name: Build distributions
         run: python -m build
 
+      # The tag check above reads __init__.py, which is not what ends up in the
+      # artifact names. v1.1.0 shipped a wheel called
+      # gpd3303s_control-1.0.0-py3-none-any.whl because pyproject.toml carried
+      # its own hardcoded version. Check what was actually built.
+      - name: Check the built artifacts carry the tag's version
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          ls -1 dist/
+          test -f "dist/gpd3303s_control-${VERSION}-py3-none-any.whl" || {
+            echo "::error::no wheel named for ${VERSION}; built: $(ls dist/)"; exit 1; }
+          test -f "dist/gpd3303s_control-${VERSION}.tar.gz" || {
+            echo "::error::no sdist named for ${VERSION}; built: $(ls dist/)"; exit 1; }
+          echo "wheel and sdist both carry ${VERSION}"
+
       # The self-contained app: Python, Qt and the code in one file. This is
       # what makes "download and run it" possible without pip, a virtualenv or
       # anything on PATH -- the three things that let an old build keep running.

@@ -154,6 +154,26 @@ Consequences worth keeping straight:
 - A connect clears all parking. Never present parking as isolation in the UI or
   the docs — the terminals are still connected.
 
+## The version lives in exactly one place
+
+`src/gpd3303s/__init__.py` holds `__version__`, and `pyproject.toml` declares
+`dynamic = ["version"]` with hatchling reading it from there. Never add a
+static `version =` back to `[project]`.
+
+v1.1.0 shipped a wheel named `gpd3303s_control-1.0.0-py3-none-any.whl` beside a
+standalone app reporting 1.1.0, because `pyproject.toml` carried its own copy
+and only `__init__.py` had been bumped. The release workflow's tag check read
+`__init__.py`, so nothing noticed. It now also asserts the built wheel and sdist
+are *named* for the tag, and `tests/test_version_is_single_sourced.py` fails if
+the static version comes back, or if the file hatchling is pointed at does not
+hold the version the module reports.
+
+That test deliberately does **not** compare against the *installed*
+distribution. An editable install keeps the metadata from when it was
+installed, so every version bump would fail it until someone reinstalled —
+a stale venv, not this bug, and crying wolf at each bump would train people to
+ignore it.
+
 ## A release can be older than the code
 
 The one-liner asked GitHub for the *latest release* and installed that. The
