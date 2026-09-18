@@ -21,13 +21,13 @@ offline, and updates itself. Runs on Windows, macOS and Linux.
 
 ### Linux: just download it
 
-Grab **GPD-Control-x86_64** from the
-[latest release](https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/latest):
-
 ```sh
+curl -fLO https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/latest/download/GPD-Control-x86_64
 chmod +x GPD-Control-x86_64
 ./GPD-Control-x86_64
 ```
+
+That URL always points at the newest release, so it never goes stale.
 
 That single file contains Python, Qt and the app. Nothing is installed, nothing
 goes on your `PATH`, and no older copy can shadow it — the thing that runs is the
@@ -40,6 +40,9 @@ To put it in your applications menu, move it somewhere permanent first:
 mkdir -p ~/.local/bin && mv GPD-Control-x86_64 ~/.local/bin/
 ~/.local/bin/GPD-Control-x86_64 --install-desktop-entry
 ```
+
+The menu entry points at that exact file by absolute path, so it launches the
+app you downloaded rather than whatever `PATH` happens to resolve.
 
 ### Or install it from source
 
@@ -89,7 +92,7 @@ Every release also attaches a wheel and a source archive. To install one by hand
 from the [releases page](https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/latest):
 
 ```sh
-pip install "https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/download/v1.1.0/gpd3303s_control-1.1.0-py3-none-any.whl"
+pip install "https://github.com/nomad9021/GPD-3303S-PSU-Control/releases/download/v1.1.1/gpd3303s_control-1.1.1-py3-none-any.whl"
 ```
 
 There are no optional extras to choose — everything the app needs is a plain
@@ -360,7 +363,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 260 tests, no hardware needed
+uv run pytest                    # 268 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 

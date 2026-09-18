@@ -3,7 +3,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-.venv/
+.venv*/
 venv/
 .pytest_cache/
 .coverage
