@@ -155,21 +155,32 @@ def run_app(args) -> int:
     window.show()
 
     port = SIMULATOR_PORT if args.simulate else args.connect
-    if port:
-        try:
-            supply.connect(port, int(settings.get("baud_rate", 9600)))
-            window._after_connect()
-        except Exception as exc:  # noqa: BLE001 - surfaced in the window
-            log.error("could not connect to %s: %s", port, exc)
+    if not args.simulate and window.agent.start():
+        # The Test Hub has the supply open: follow it instead of opening the
+        # port as well (or probing it, which would talk over the hub).
+        window._sync_share()
+        if port:
+            window.agent.request_open({"port": port, "baud": int(settings.get("baud_rate", 9600))})
+    elif port:
+        baud = int(settings.get("baud_rate", 9600))
+        if port == SIMULATOR_PORT or window.agent.request_open({"port": port, "baud": baud}):
+            try:
+                supply.connect(port, baud)
+                window._after_connect()
+            except Exception as exc:  # noqa: BLE001 - surfaced in the window
+                window.agent.let_go()
+                log.error("could not connect to %s: %s", port, exc)
     elif not args.no_autoconnect:
         # Find the instrument without the user choosing a port or guessing a
         # baud rate. Entirely local: it only probes serial ports.
         found = discover()
-        if found:
+        link = {"port": found["port"], "baud": found["baud_rate"]} if found else None
+        if link and (found["port"] == SIMULATOR_PORT or window.agent.request_open(link)):
             try:
                 supply.connect(found["port"], found["baud_rate"])
                 window._after_connect()
             except Exception as exc:  # noqa: BLE001
+                window.agent.let_go()
                 log.error("could not connect to %s: %s", found["port"], exc)
 
     return app.exec()

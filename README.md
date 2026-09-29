@@ -155,6 +155,33 @@ back. Quitting the app always hands control back to the panel.
 > ```
 > The installer checks this and tells you if it's missing.
 
+### Sharing the supply with the VCD Test Hub
+
+GPD Control and the [VCD Test Hub](https://github.com/nomad9021/Electronics-testing-app)
+can both drive the supply, but only one of them may hold the serial port. They
+sort it out between them: **the window you are using has the supply, and the
+other one follows it.**
+
+- Click into GPD Control while the hub has the supply and the hub hands it over.
+  Go back to the hub and it takes it back. The port and baud rate travel with
+  it, and the supply itself is not touched: the output stays as it was.
+- The app that is not in charge goes idle rather than disconnecting. It shows
+  **IN USE BY TEST HUB** (or GPD Control), keeps showing the live readings, and
+  keeps recording a CSV log if one is running, with its controls paused.
+  **Use Here** takes the supply over without waiting for a click in the window.
+- An app that is busy keeps the supply until it is done: GPD Control while a
+  sequence runs, the hub while a test runs. The other window says so, and the
+  supply moves over as soon as the work finishes. **Stop Asking** withdraws the
+  request.
+- <kbd>Esc</kbd> still switches the output off while the hub has the supply,
+  even in the middle of a test.
+- If GPD Control starts while the hub has the supply, it follows the hub
+  instead of searching the serial ports, which would talk over it.
+
+Prefer to switch by hand? Set `"auto_handoff": false` in the settings file
+(`gpd3303s --where`); **Use Here** then does the switching. The simulator is
+never shared.
+
 ### Themes
 
 **Light**, **Auto** and **Dark** sit in the title bar. Auto follows your
@@ -258,7 +285,7 @@ Anything ending in `?` is treated as a query.
 | Key | Action |
 |---|---|
 | <kbd>Space</kbd> | Toggle the output |
-| <kbd>Esc</kbd> | Disable the output immediately |
+| <kbd>Esc</kbd> | Disable the output immediately (also while the Test Hub has the supply) |
 
 ---
 
@@ -363,7 +390,7 @@ Other details taken from the manual and enforced in `tests/test_manual_conforman
 git clone https://github.com/nomad9021/GPD-3303S-PSU-Control
 cd GPD-3303S-PSU-Control
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                    # 268 tests, no hardware needed
+uv run pytest                    # 278 tests, no hardware needed
 uv run gpd3303s --simulate
 ```
 
@@ -381,6 +408,7 @@ Layout:
 | `src/gpd3303s/device.py` | Serial transport, polling thread, protection watchdog, discovery |
 | `src/gpd3303s/simulator.py` | In-process fake supply |
 | `src/gpd3303s/sequencer.py` | Timed setpoint sequences |
+| `src/gpd3303s/handoff.py` | Sharing the supply with the VCD Test Hub. No Qt import. |
 | `src/gpd3303s/recorder.py` | CSV logging |
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
 | `src/gpd3303s/ui/app.py` | The main window: app bar, sidebar, instrument panel, status bar |

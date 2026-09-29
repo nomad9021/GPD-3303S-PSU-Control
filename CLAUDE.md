@@ -43,6 +43,7 @@ test count quoted under Development is part of that.
 | `src/gpd3303s/device.py` | Serial transport, polling thread, protection watchdog, discovery |
 | `src/gpd3303s/simulator.py` | In-process fake supply |
 | `src/gpd3303s/sequencer.py` | Timed setpoint sequences |
+| `src/gpd3303s/handoff.py` | Sharing the supply with the VCD Test Hub. No Qt import. |
 | `src/gpd3303s/recorder.py` | CSV logging |
 | `src/gpd3303s/updater.py` | GitHub release checks and self-upgrade |
 | `src/gpd3303s/assets.py` | Where the packaged icon lives. No Qt import, ever. |
@@ -224,3 +225,18 @@ is not picked up and it fails the same way. Use **Actions → Release → Run
 workflow** with the tag as input: that takes the workflow from `main` and checks
 out the tag's code. The publish step is idempotent and will repair a
 half-published release.
+
+## The supply is shared with the VCD Test Hub
+
+`handoff.py` is a lease in small JSON files under `$XDG_RUNTIME_DIR/electronics-bench`
+(no sockets, which keeps `TestNoWebAnywhere` meaningful). The window in use
+holds the serial port; the other app follows it with controls paused and shows
+the owner's telemetry from `psu.live.json`. The Test Hub
+(github.com/nomad9021/Electronics-testing-app) carries a byte-identical copy as
+`vcdcontrol/handoff.py`: the file format is the contract between them, so change
+both together (`tests/test_handoff.py::test_the_copy_matches_vcd_control`).
+
+- Take the lease **before** opening a real port, including at start-up and in
+  Find supply. Probing a port the hub holds talks over it.
+- The simulator is never shared; `SIMULATOR_PORT` bypasses the lease.
+- Esc works while idle: it asks the owner to switch the output off, busy or not.
