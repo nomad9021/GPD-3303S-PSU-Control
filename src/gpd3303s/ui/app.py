@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QFont, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..assets import icon_path
 from ..config import Settings
+from ..handoff import PSU, URGENT_OUTPUT_OFF, Agent, Lease, View
 from ..device import (
     DeviceError,
     PowerSupply,
@@ -43,7 +44,7 @@ from ..device import (
     available_ports,
     discover,
 )
-from ..protocol import SUPPORTED_BAUD_RATES, TrackingMode
+from ..protocol import MODELS, SUPPORTED_BAUD_RATES, TrackingMode
 from ..recorder import Recorder
 from ..sequencer import Sequencer
 from ..updater import UpdateChecker, UpdateInfo, apply_update
@@ -107,6 +108,23 @@ class MainWindow(QMainWindow):
         )
         self.updates.start()
 
+        # Sharing the supply with the Test Hub: whichever window is in use has
+        # the serial port, and the other shows its readings (see handoff.py).
+        self.agent = Agent(
+            Lease(PSU, "GPD Control"),
+            is_connected=lambda: self.supply.connected and self.supply.port != SIMULATOR_PORT,
+            busy=lambda: "running a sequence" if self.sequencer.running else None,
+            current_link=lambda: {"port": self.supply.port, "baud": self.supply.baud_rate},
+            open_link=self._open_link, close_link=self._close_for_handover,
+            snapshot=lambda: self.supply.snapshot().to_dict(),
+            show_live=self._show_live, on_urgent=self._on_urgent,
+            is_active=self.isActiveWindow,
+        )
+        self._mirror_t = 0.0
+        self._handoff_timer = QTimer(self)
+        self._handoff_timer.timeout.connect(self._handoff_tick)
+        self._handoff_timer.start(300)
+
     # -- construction ------------------------------------------------------- #
 
     def _build(self) -> None:
@@ -117,6 +135,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
 
         root.addWidget(self._build_appbar())
+        root.addWidget(self._build_share_banner())
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -375,6 +394,10 @@ class MainWindow(QMainWindow):
             f"#UpdateBanner {{ background: {theme.base}; color: {theme.text};"
             f" border: 1px solid {theme.accent}; border-radius: 5px; }}"
         )
+        self.share_banner.setStyleSheet(
+            f"#ShareBanner {{ background: {theme.base}; border: 1px solid {theme.border};"
+            f" border-radius: 5px; }} #ShareBanner QLabel {{ color: {theme.text}; }}"
+        )
         self._refresh_status_colours()
 
     def _refresh_status_colours(self) -> None:
@@ -403,19 +426,34 @@ class MainWindow(QMainWindow):
     def toggle_connection(self) -> None:
         if self.supply.connected:
             self.supply.disconnect()
+            self.agent.let_go()
             self._set_connected(False, None)
+            self._sync_share()
+            return
+        if self.agent.following or self.agent.view.owner:
+            self.use_here()
             return
         port = self.port_box.currentData() or SIMULATOR_PORT
         baud = int(self.baud_box.currentData())
+        if port == SIMULATOR_PORT:
+            self.agent.let_go()
+        elif not self.agent.request_open({"port": port, "baud": baud}):
+            self._sync_share()
+            return
         try:
             self.supply.connect(port, baud)
         except DeviceError as exc:
+            self.agent.let_go()
             self._warn("Could not connect", str(exc))
             return
         self.settings.update({"last_port": port, "baud_rate": baud})
         self._after_connect()
 
     def find_supply(self) -> None:
+        if self.agent.view.owner:
+            # Probing would talk over the app that has the supply open.
+            self.use_here()
+            return
         self.find_button.setEnabled(False)
         self.find_button.setText("Searching…")
         QApplication.processEvents()
@@ -431,9 +469,14 @@ class MainWindow(QMainWindow):
                 "Check the USB cable, and on Linux that you are in the 'dialout' group.",
             )
             return
+        link = {"port": found["port"], "baud": found["baud_rate"]}
+        if found["port"] != SIMULATOR_PORT and not self.agent.request_open(link):
+            self._sync_share()
+            return
         try:
             self.supply.connect(found["port"], found["baud_rate"])
         except DeviceError as exc:
+            self.agent.let_go()
             self._warn("Could not connect", str(exc))
             return
         self.settings.update({"last_port": found["port"], "baud_rate": found["baud_rate"]})
@@ -444,18 +487,19 @@ class MainWindow(QMainWindow):
         self._after_connect()
 
     def _after_connect(self) -> None:
+        self._mirror_t = 0.0
         self._rebuild_channels()
         self._set_connected(True, self.supply.snapshot())
         self.protection.apply_stored(self.settings.get("protection", {}) or {})
 
-    def _rebuild_channels(self) -> None:
+    def _rebuild_channels(self, model_spec=None) -> None:
         while self.channel_row.count():
             item = self.channel_row.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self.channels = []
 
-        specs = self.supply.spec.programmable_channels
+        specs = (model_spec or self.supply.spec).programmable_channels
         for spec in specs:
             panel = ChannelPanel(
                 spec.index, spec.label or f"CH{spec.index}",
@@ -539,6 +583,10 @@ class MainWindow(QMainWindow):
     def _emergency_off(self) -> None:
         if self.supply.connected:
             self._guard(self.supply.set_output, False)
+        elif self.agent.view.owner:
+            # Esc works even while the Test Hub has the supply.
+            self.agent.lease.urge(URGENT_OUTPUT_OFF)
+            self.status_link.setText(f"Asked {self.agent.view.owner} to switch the output off")
 
     def set_tracking(self, mode: TrackingMode) -> None:
         self._guard(self.supply.set_tracking, mode)
@@ -759,6 +807,130 @@ class MainWindow(QMainWindow):
                 result.get("output") or "The update could not be installed.",
             )
 
+    # -- sharing the supply ------------------------------------------------- #
+
+    def _build_share_banner(self) -> QWidget:
+        self.share_banner = QFrame()
+        self.share_banner.setObjectName("ShareBanner")
+        layout = QHBoxLayout(self.share_banner)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+        self.share_label = QLabel()
+        self.share_label.setWordWrap(True)
+        layout.addWidget(self.share_label, 1)
+        self.share_use = QPushButton("Use Here")
+        self.share_use.setProperty("accent", "true")
+        self.share_use.setToolTip("Take the supply over from the other app")
+        self.share_use.clicked.connect(self.use_here)
+        layout.addWidget(self.share_use)
+        self.share_cancel = QPushButton("Stop Asking")
+        self.share_cancel.clicked.connect(self._stop_asking)
+        layout.addWidget(self.share_cancel)
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(10, 8, 10, 0)
+        host_layout.addWidget(self.share_banner)
+        self.share_host = host
+        host.setVisible(False)
+        return host
+
+    def _open_link(self, link: dict) -> bool:
+        port, baud = link.get("port"), int(link.get("baud") or self.settings.get("baud_rate", 9600))
+        try:
+            self.supply.connect(port, baud)
+        except DeviceError as exc:
+            self._warn("Could not connect", str(exc))
+            return False
+        self.settings.update({"last_port": port, "baud_rate": baud})
+        index = self.baud_box.findData(baud)
+        if index >= 0:
+            self.baud_box.setCurrentIndex(index)
+        self.refresh_ports()
+        self._after_connect()
+        return True
+
+    def _close_for_handover(self) -> None:
+        self.sequencer.stop()
+        self.supply.disconnect()
+        self._set_connected(False, None)
+
+    def _show_live(self, data: Optional[dict]) -> None:
+        """Another app's readings, shown with the controls paused. Recording
+        carries on from them, so a log has no gap across a handover."""
+        if not data or self.supply.connected:
+            return
+        t = data.get("timestamp") or data.get("_t") or 0.0
+        if t <= self._mirror_t:
+            return
+        first = self._mirror_t == 0.0
+        self._mirror_t = t
+        spec = MODELS.get(data.get("model") or "")
+        if first or (spec and [c.index for c in spec.programmable_channels]
+                     != [p.index for p in self.channels]):
+            self._rebuild_channels(spec)
+            for panel in self.channels:
+                panel.set_enabled(False)
+        index = self.port_box.findData(data.get("port"))
+        if index >= 0:
+            self.port_box.setCurrentIndex(index)
+        fields = {k: data[k] for k in Telemetry.__dataclass_fields__ if k in data}
+        self._on_telemetry(Telemetry(**fields))
+        self.subtitle.setText(f"{data.get('identity') or data.get('model') or ''}"
+                              f" · in {data.get('_app') or 'another app'}")
+
+    def _on_urgent(self, what: str) -> None:
+        if what == URGENT_OUTPUT_OFF:
+            self.sequencer.stop()
+            self._emergency_off()
+
+    def use_here(self) -> None:
+        if self.supply.connected:
+            return
+        self.agent.following = True
+        self.agent.claim()
+        self._sync_share()
+
+    def _stop_asking(self) -> None:
+        self.agent.lease.cancel()
+        self._sync_share()
+
+    def _handoff_tick(self) -> None:
+        self._sync_share(self.agent.tick())
+
+    def _sync_share(self, view: Optional[View] = None) -> None:
+        v = view or self.agent.view
+        text, use, cancel = "", False, False
+        if self.supply.connected:
+            if v.requested_by and v.busy:
+                text = (f"{v.requested_by} asked for the supply. It stays here while "
+                        f"{v.busy}; stop it to hand the supply over.")
+        elif v.waiting and v.refused:
+            text, cancel = f"{v.refused}. It will hand the supply over when it finishes.", True
+        elif v.waiting:
+            text, cancel = f"Asking {v.owner} to hand the supply over\u2026", True
+        elif v.owner:
+            live = " Showing its live readings; Esc still switches the output off." \
+                if self._mirror_t else ""
+            text, use = f"<b>IN USE BY {v.owner.upper()}</b> \u00b7 Controls are paused.{live}", True
+            self.status_link.setText(f"In use by {v.owner}")
+        elif self.agent.following:
+            text, use = "The supply is free.", True
+        self.share_label.setText(text)
+        self.share_use.setVisible(use)
+        self.share_cancel.setVisible(cancel)
+        self.share_host.setVisible(bool(text))
+        if not self.supply.connected:
+            away = bool(v.owner or self.agent.following)
+            self.connect_button.setText("Use Here" if away else "Connect")
+            self.find_button.setEnabled(not away)
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.ActivationChange and self.isActiveWindow()
+                and self.settings.get("auto_handoff", True) and hasattr(self, "agent")):
+            self.agent.claim()
+            self._sync_share()
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         # Hand the front panel back and stop the poller before the window goes.
         self.updates.stop()
@@ -766,4 +938,5 @@ class MainWindow(QMainWindow):
         self.recorder.stop()
         self.bridge.close()
         self.supply.disconnect()
+        self.agent.let_go()
         super().closeEvent(event)

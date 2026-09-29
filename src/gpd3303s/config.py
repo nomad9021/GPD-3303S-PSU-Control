@@ -25,6 +25,9 @@ DEFAULTS: Dict[str, Any] = {
     "confirm_output_on": False,
     "presets": [],                 # [{name, channels:[{channel,voltage,current}]}]
     "protection": {},              # {"1": {enabled, over_voltage, ...}}
+    # Take the supply over from the Test Hub when this window is used
+    # (see handoff.py).
+    "auto_handoff": True,
 }
 
 
